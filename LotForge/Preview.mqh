@@ -96,8 +96,8 @@ void EnsurePreviewLine(const string kind,
       if(!ObjectCreate(0, name, OBJ_HLINE, 0, TimeCurrent(), price)) return;
       ObjectSetInteger(0, name, OBJPROP_HIDDEN,     false);
       ObjectSetInteger(0, name, OBJPROP_SELECTED,   false);
-      ObjectSetInteger(0, name, OBJPROP_BACK,       false);  // foreground — clickable
      }
+   ObjectSetInteger(0, name, OBJPROP_BACK,       true);   // behave like chart guide, behind panel/overlay
    bool selectable = (kind != "entry" || IsPendingAction(g_state.action));
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, selectable);   // native drag via CHARTEVENT_OBJECT_DRAG
    if(!selectable)
@@ -209,50 +209,27 @@ void ApplyHandleLabelFont(const string obj_name)
    ObjectSetInteger(0, obj_name, OBJPROP_FONTSIZE, 11);
   }
 
-bool FitHandleBarOutsidePanel(int &bar_x, int &bar_w, const int box_y, const int box_h)
+void ExpandOverlayBarToFitText(int &bar_x, int &bar_w, const string text)
   {
-   if(bar_w < 1)
-      return false;
+   uint tw = 0, th = 0;
+   MeasureHandleLabelText(text, tw, th);
 
-   int panel_x1 = (int)g_panel.Left();
-   int panel_y1 = (int)g_panel.Top();
-   int panel_x2 = (int)g_panel.Right();
-   int panel_y2 = (int)g_panel.Bottom();
+   int required_w = (int)tw + 2 * OVL_PAD_X + 2;
+   if(required_w > bar_w)
+      bar_w = required_w;
 
-   if(panel_x2 <= panel_x1 || panel_y2 <= panel_y1)
-      return true;
+   int chart_w = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   if(chart_w <= 0)
+      return;
 
-   int bar_x2 = bar_x + bar_w;
-   int bar_y2 = box_y + box_h;
+   int max_w = MathMax(20, chart_w - 4);
+   if(bar_w > max_w)
+      bar_w = max_w;
 
-   bool overlap_x = !(bar_x2 <= panel_x1 || bar_x >= panel_x2);
-   bool overlap_y = !(bar_y2 <= panel_y1 || box_y >= panel_y2);
-   if(!overlap_x || !overlap_y)
-      return true;
-
-   const int gap = 4;
-   int left_x1  = bar_x;
-   int left_x2  = MathMin(bar_x2, panel_x1 - gap);
-   int left_w   = left_x2 - left_x1;
-   int right_x1 = MathMax(bar_x, panel_x2 + gap);
-   int right_x2 = bar_x2;
-   int right_w  = right_x2 - right_x1;
-
-   if(right_w >= left_w && right_w > 0)
-     {
-      bar_x = right_x1;
-      bar_w = right_w;
-     }
-   else if(left_w > 0)
-     {
-      bar_w = left_w;
-     }
-   else
-     {
-      return false;
-     }
-
-   return (bar_w > (2 * OVL_PAD_X + 8));
+   if(bar_x + bar_w > chart_w - 2)
+      bar_x = chart_w - 2 - bar_w;
+   if(bar_x < 0)
+      bar_x = 0;
   }
 
 //+------------------------------------------------------------------+
@@ -349,7 +326,7 @@ void EraseOverlayLabel(const string kind)
 //|  OBJ_LABEL pair positioned from price via ChartTimePriceToXY.    |
 //|  Both objects live in screen-space (CORNER_LEFT_UPPER +           |
 //|  XDISTANCE/YDISTANCE), OBJPROP_BACK=false — floats above chart   |
-//|  but get clipped away from the menu rectangle when overlapping.   |
+//|  and may render over the menu if geometry overlaps.               |
 //|                                                                   |
 //|  Always recomputes layout from the current chart geometry/text.   |
 //|  This avoids visual drift from cached width/height assumptions.   |
@@ -386,15 +363,9 @@ void UpdateOverlayPreviewLabel(const string kind,
    string bg_n  = PREV_PFX + kind + "_ovbg";
    string txt_n = PREV_PFX + kind + "_ovtxt";
 
-   if(!FitHandleBarOutsidePanel(bar_x, bar_w, box_y, box_h))
-     {
-      if(ObjectFind(0, bg_n)  >= 0) ObjectDelete(0, bg_n);
-      if(ObjectFind(0, txt_n) >= 0) ObjectDelete(0, txt_n);
-      return;
-     }
-
    bool bg_exists  = (ObjectFind(0, bg_n)  >= 0);
    bool txt_exists = (ObjectFind(0, txt_n) >= 0);
+   ExpandOverlayBarToFitText(bar_x, bar_w, text);
    int avail_w  = MathMax(10, bar_w - 2 * OVL_PAD_X);
    string fitted_text = FitHandleLabelText(text, avail_w);
 
@@ -647,10 +618,10 @@ void UpdatePreview(const bool do_redraw)
    // ── Horizontal lines (drag handles) ──────────────────────────────
    string effective_lbl = EffectiveActionLabel(g_state.action, entry_price);
    EnsurePreviewLine("entry", entry_price,
-                     CLR_ENTRY_LINE, STYLE_DASH, 1,
+                     CLR_ENTRY_LINE, STYLE_DOT, 1,
                      effective_lbl + " @ " + FormatPrice(entry_price));
    if(sl_price > 0.0)
-      EnsurePreviewLine("sl", sl_price, CLR_SL_LINE, STYLE_DASH, 1,
+      EnsurePreviewLine("sl", sl_price, CLR_SL_LINE, STYLE_DOT, 1,
                         "SL @ " + FormatPrice(sl_price));
    else
      {
@@ -659,7 +630,7 @@ void UpdatePreview(const bool do_redraw)
       EraseOverlayLabel("sl");
      }
    if(tp_price > 0.0)
-      EnsurePreviewLine("tp", tp_price, CLR_TP_LINE, STYLE_DASH, 1,
+      EnsurePreviewLine("tp", tp_price, CLR_TP_LINE, STYLE_DOT, 1,
                         "TP @ " + FormatPrice(tp_price));
    else
      {

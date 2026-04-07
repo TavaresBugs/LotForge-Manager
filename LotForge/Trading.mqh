@@ -2,6 +2,288 @@
 //|  ██  FASE 4A — Planning & Validation Layer                       |
 //+------------------------------------------------------------------+
 
+string g_conversion_symbols[];
+bool   g_conversion_symbols_cached = false;
+
+string NormalizeCurrencyCode(const string currency)
+  {
+   if(currency == "RUR") return "RUB";
+   return currency;
+  }
+
+bool IsForexCalcMode(const ENUM_SYMBOL_CALC_MODE calc_mode)
+  {
+   return (calc_mode == SYMBOL_CALC_MODE_FOREX ||
+           calc_mode == SYMBOL_CALC_MODE_FOREX_NO_LEVERAGE);
+  }
+
+void EnsureConversionSymbolCache()
+  {
+   if(g_conversion_symbols_cached)
+      return;
+
+   ArrayResize(g_conversion_symbols, 0);
+
+   int total = SymbolsTotal(false);
+   for(int i = 0; i < total; i++)
+     {
+      string symbol = SymbolName(i, false);
+      ENUM_SYMBOL_CALC_MODE mode =
+         (ENUM_SYMBOL_CALC_MODE)SymbolInfoInteger(symbol, SYMBOL_TRADE_CALC_MODE);
+      if(!IsForexCalcMode(mode))
+         continue;
+
+      int size = ArraySize(g_conversion_symbols);
+      ArrayResize(g_conversion_symbols, size + 1, 128);
+      g_conversion_symbols[size] = symbol;
+     }
+
+   g_conversion_symbols_cached = true;
+  }
+
+string FindConversionSymbolByCurrencies(const string base_currency,
+                                        const string profit_currency)
+  {
+   if(base_currency == "" || profit_currency == "")
+      return "";
+
+   EnsureConversionSymbolCache();
+
+   int total = ArraySize(g_conversion_symbols);
+   for(int i = 0; i < total; i++)
+     {
+      string symbol = g_conversion_symbols[i];
+      if(SymbolInfoString(symbol, SYMBOL_CURRENCY_BASE) != base_currency)
+         continue;
+      if(SymbolInfoString(symbol, SYMBOL_CURRENCY_PROFIT) != profit_currency)
+         continue;
+
+      if(!(bool)SymbolInfoInteger(symbol, SYMBOL_SELECT))
+         SymbolSelect(symbol, true);
+
+      return symbol;
+     }
+
+   return "";
+  }
+
+bool CalcCurrencyConversionRate(const string from_currency,
+                                const string to_currency,
+                                const bool   for_profit,
+                                double      &out_rate,
+                                string      &out_reason)
+  {
+   out_rate   = 1.0;
+   out_reason = "";
+
+   string from_ccy = NormalizeCurrencyCode(from_currency);
+   string to_ccy   = NormalizeCurrencyCode(to_currency);
+   if(from_ccy == to_ccy)
+      return true;
+   if(from_ccy == "" || to_ccy == "")
+     {
+      out_reason = "Erro: moeda inválida para conversão financeira.";
+      return false;
+     }
+
+   MqlTick tick;
+   string symbol = FindConversionSymbolByCurrencies(from_ccy, to_ccy);
+   if(symbol != "")
+     {
+      if(!SymbolInfoTick(symbol, tick) || tick.ask <= 0.0 || tick.bid <= 0.0)
+        {
+         out_reason = "Erro: cotação indisponível para conversão financeira.";
+         return false;
+        }
+      out_rate = for_profit ? tick.bid : tick.ask;
+      return true;
+     }
+
+   symbol = FindConversionSymbolByCurrencies(to_ccy, from_ccy);
+   if(symbol != "")
+     {
+      if(!SymbolInfoTick(symbol, tick) || tick.ask <= 0.0 || tick.bid <= 0.0)
+        {
+         out_reason = "Erro: cotação indisponível para conversão financeira.";
+         return false;
+        }
+      out_rate = for_profit ? (1.0 / tick.ask) : (1.0 / tick.bid);
+      return true;
+     }
+
+   if(from_ccy != "USD" && to_ccy != "USD")
+     {
+      double leg_1 = 0.0, leg_2 = 0.0;
+      string leg_reason;
+      if(CalcCurrencyConversionRate(from_ccy, "USD", for_profit, leg_1, leg_reason) &&
+         CalcCurrencyConversionRate("USD", to_ccy, for_profit, leg_2, leg_reason))
+        {
+         out_rate = leg_1 * leg_2;
+         return true;
+        }
+     }
+
+   out_reason = StringFormat("Erro: não foi possível converter %s para %s.", from_ccy, to_ccy);
+   return false;
+  }
+
+bool ConvertMoneyToAccountCurrency(const double money,
+                                   const string from_currency,
+                                   const bool   for_profit,
+                                   double      &out_money,
+                                   string      &out_reason)
+  {
+   out_money  = money;
+   out_reason = "";
+
+   string account_currency = NormalizeCurrencyCode(AccountInfoString(ACCOUNT_CURRENCY));
+   string source_currency  = NormalizeCurrencyCode(from_currency);
+   if(source_currency == account_currency || money == 0.0)
+      return true;
+
+   double rate = 1.0;
+   if(!CalcCurrencyConversionRate(source_currency, account_currency, for_profit, rate, out_reason))
+      return false;
+
+   out_money = money * rate;
+   return true;
+  }
+
+bool CalcSymbolPnLForMoveManual(const double open_price,
+                                const double close_price,
+                                const double volume,
+                                const bool   is_buy,
+                                double      &out_money,
+                                string      &out_reason)
+  {
+   out_money  = 0.0;
+   out_reason = "";
+
+   double signed_price_move = is_buy ? (close_price - open_price)
+                                     : (open_price - close_price);
+   if(MathAbs(signed_price_move) < 1e-12)
+      return true;
+
+   ENUM_SYMBOL_CALC_MODE calc_mode =
+      (ENUM_SYMBOL_CALC_MODE)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_CALC_MODE);
+   string account_currency = NormalizeCurrencyCode(AccountInfoString(ACCOUNT_CURRENCY));
+   string profit_currency  = NormalizeCurrencyCode(SymbolInfoString(_Symbol, SYMBOL_CURRENCY_PROFIT));
+   string base_currency    = NormalizeCurrencyCode(SymbolInfoString(_Symbol, SYMBOL_CURRENCY_BASE));
+   bool   is_profit_move   = (signed_price_move > 0.0);
+   double raw_money        = 0.0;
+
+   switch(calc_mode)
+     {
+      case SYMBOL_CALC_MODE_FOREX:
+      case SYMBOL_CALC_MODE_FOREX_NO_LEVERAGE:
+      case SYMBOL_CALC_MODE_CFD:
+      case SYMBOL_CALC_MODE_CFDINDEX:
+      case SYMBOL_CALC_MODE_CFDLEVERAGE:
+      case SYMBOL_CALC_MODE_EXCH_STOCKS:
+      case SYMBOL_CALC_MODE_EXCH_STOCKS_MOEX:
+        {
+         double contract_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+         if(contract_size <= 0.0)
+           {
+            out_reason = "Erro: contract size indisponível para fallback financeiro.";
+            return false;
+           }
+         raw_money = signed_price_move * contract_size * volume;
+         break;
+        }
+
+      case SYMBOL_CALC_MODE_FUTURES:
+      case SYMBOL_CALC_MODE_EXCH_FUTURES:
+      case SYMBOL_CALC_MODE_EXCH_FUTURES_FORTS:
+        {
+         double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+         double tick_value = SymbolInfoDouble(
+            _Symbol,
+            is_profit_move ? SYMBOL_TRADE_TICK_VALUE_PROFIT
+                           : SYMBOL_TRADE_TICK_VALUE_LOSS);
+         if(tick_value <= 0.0)
+            tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+         if(tick_size <= 0.0 || tick_value <= 0.0)
+           {
+            out_reason = "Erro: tick size/value indisponível para fallback financeiro.";
+            return false;
+           }
+         raw_money = signed_price_move / tick_size * tick_value * volume;
+         break;
+        }
+
+      default:
+        {
+         out_reason = StringFormat("Erro: fallback financeiro não suporta calc mode %d.", (int)calc_mode);
+         return false;
+        }
+     }
+
+   if(account_currency == profit_currency || profit_currency == "")
+     {
+      out_money = raw_money;
+      return true;
+     }
+
+   if(IsForexCalcMode(calc_mode) && account_currency == base_currency && close_price > 0.0)
+     {
+      out_money = raw_money / close_price;
+      return true;
+     }
+
+   double converted = 0.0;
+   if(!ConvertMoneyToAccountCurrency(MathAbs(raw_money), profit_currency, is_profit_move, converted, out_reason))
+      return false;
+
+   out_money = (raw_money >= 0.0) ? converted : -converted;
+   return true;
+  }
+
+double CalcRoundTripCommissionMoney(const double volume)
+  {
+   if(volume <= 0.0)
+      return 0.0;
+
+   double per_side = MathMax(0.0, InpCommissionPerLot);
+   return per_side * volume * 2.0;
+  }
+
+bool CalcNetRiskMoneyForMove(const double open_price,
+                             const double close_price,
+                             const double volume,
+                             const bool   is_buy,
+                             double      &out_money,
+                             string      &out_reason)
+  {
+   out_money  = 0.0;
+   out_reason = "";
+
+   double raw_money = 0.0;
+   if(!CalcSymbolPnLForMove(open_price, close_price, volume, is_buy, raw_money, out_reason))
+      return false;
+
+   out_money = MathAbs(raw_money) + CalcRoundTripCommissionMoney(volume);
+   return true;
+  }
+
+bool CalcNetRewardMoneyForMove(const double open_price,
+                               const double close_price,
+                               const double volume,
+                               const bool   is_buy,
+                               double      &out_money,
+                               string      &out_reason)
+  {
+   out_money  = 0.0;
+   out_reason = "";
+
+   double raw_money = 0.0;
+   if(!CalcSymbolPnLForMove(open_price, close_price, volume, is_buy, raw_money, out_reason))
+      return false;
+
+   out_money = MathMax(0.0, raw_money - CalcRoundTripCommissionMoney(volume));
+   return true;
+  }
+
 bool CalcSymbolPnLForMove(const double open_price,
                           const double close_price,
                           const double volume,
@@ -27,31 +309,7 @@ bool CalcSymbolPnLForMove(const double open_price,
    if(OrderCalcProfit(order_type, _Symbol, volume, open_price, close_price, out_money))
       return true;
 
-   double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   if(tick_size <= 0.0)
-     {
-      out_reason = "Erro: tick size indisponível para cálculo financeiro.";
-      return false;
-     }
-
-   bool is_profit_move = (is_buy && close_price > open_price) ||
-                         (!is_buy && close_price < open_price);
-   double tick_value = SymbolInfoDouble(
-      _Symbol,
-      is_profit_move ? SYMBOL_TRADE_TICK_VALUE_PROFIT
-                     : SYMBOL_TRADE_TICK_VALUE_LOSS);
-   if(tick_value <= 0.0)
-      tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   if(tick_value <= 0.0)
-     {
-      out_reason = "Erro: tick value indisponível para cálculo financeiro.";
-      return false;
-     }
-
-   double price_dist = MathAbs(close_price - open_price);
-   double money_abs  = price_dist / tick_size * tick_value * volume;
-   out_money = is_profit_move ? money_abs : -money_abs;
-   return true;
+   return CalcSymbolPnLForMoveManual(open_price, close_price, volume, is_buy, out_money, out_reason);
   }
 
 //+------------------------------------------------------------------+
@@ -98,7 +356,7 @@ bool CalcLotsFromRiskPercent(const double entry_price, const double sl_price,
    if(!CalcSymbolPnLForMove(entry_price, sl_price, 1.0, is_buy, pnl_per_lot, out_reason))
       return false;
 
-   double loss_per_lot = MathAbs(pnl_per_lot);
+   double loss_per_lot = MathAbs(pnl_per_lot) + CalcRoundTripCommissionMoney(1.0);
    if(loss_per_lot <= 0.0)
      { out_reason = "Erro: custo por lote calculado como zero."; return false; }
 
@@ -202,16 +460,16 @@ bool BuildTradePlan(TradeParams &params, string &out_reason)
      {
       double risk_money = 0.0;
       string money_reason;
-      if(CalcSymbolPnLForMove(params.entry_price, params.sl_price, params.lots,
-                              is_buy, risk_money, money_reason))
-         params.risk_money = NormalizeDouble(MathAbs(risk_money), 2);
+      if(CalcNetRiskMoneyForMove(params.entry_price, params.sl_price, params.lots,
+                                 is_buy, risk_money, money_reason))
+         params.risk_money = NormalizeDouble(risk_money, 2);
 
       if(params.tp_points > 0.0)
         {
          double reward_money = 0.0;
-         if(CalcSymbolPnLForMove(params.entry_price, params.tp_price, params.lots,
-                                 is_buy, reward_money, money_reason))
-            params.reward_money = NormalizeDouble(MathAbs(reward_money), 2);
+         if(CalcNetRewardMoneyForMove(params.entry_price, params.tp_price, params.lots,
+                                      is_buy, reward_money, money_reason))
+            params.reward_money = NormalizeDouble(reward_money, 2);
         }
 
       if(g_state.risk_mode == RISK_MODE_LOTS)

@@ -550,13 +550,7 @@ void UpdateOpenTradeMarker(const string obj_id,
    else
       box_y = py + OVL_LINE_OFFSET;
 
-   if(!FitHandleBarOutsidePanel(bar_x, bar_w, box_y, box_h))
-     {
-      if(ObjectFind(0, bg_n)  >= 0) ObjectDelete(0, bg_n);
-      if(ObjectFind(0, txt_n) >= 0) ObjectDelete(0, txt_n);
-      return;
-     }
-
+   ExpandOverlayBarToFitText(bar_x, bar_w, text);
    int avail_w  = MathMax(10, bar_w - 2 * OVL_PAD_X);
    string fitted_text = FitHandleLabelText(text, avail_w);
 
@@ -657,20 +651,17 @@ void UpdateManagedTradeMarkers(const ulong ticket)
 
    string tk_str = IntegerToString(ticket);
 
-   // ── Symbol economics for $ calculation ────────────────────────────
-   double tick_size  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   double tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double balance    = AccountInfoDouble(ACCOUNT_BALANCE);
 
    // ── TP marker ─────────────────────────────────────────────────────
    if(tp > 0.0)
      {
-      double tp_dist  = MathAbs(tp - open_price);
       double tp_money = 0.0;
       double tp_pct   = 0.0;
-      if(tick_size > 0.0 && tick_value > 0.0)
+      string tp_reason;
+      if(CalcNetRewardMoneyForMove(open_price, tp, volume, is_buy, tp_money, tp_reason))
         {
-         tp_money = NormalizeDouble(tp_dist / tick_size * tick_value * volume, 2);
+         tp_money = NormalizeDouble(tp_money, 2);
          if(balance > 0.0)
             tp_pct = NormalizeDouble(tp_money / balance * 100.0, 2);
         }
@@ -693,12 +684,12 @@ void UpdateManagedTradeMarkers(const ulong ticket)
    // ── SL marker ─────────────────────────────────────────────────────
    if(sl > 0.0)
      {
-      double sl_dist  = MathAbs(sl - open_price);
       double sl_money = 0.0;
       double sl_pct   = 0.0;
-      if(tick_size > 0.0 && tick_value > 0.0)
+      string sl_reason;
+      if(CalcNetRiskMoneyForMove(open_price, sl, volume, is_buy, sl_money, sl_reason))
         {
-         sl_money = NormalizeDouble(sl_dist / tick_size * tick_value * volume, 2);
+         sl_money = NormalizeDouble(sl_money, 2);
          if(balance > 0.0)
             sl_pct = NormalizeDouble(sl_money / balance * 100.0, 2);
         }
@@ -731,10 +722,10 @@ void UpdateManagedTradeMarkers(const ulong ticket)
       else
          mid_price = NormalizePriceValue(open_price - (open_price - tp) * partial_pct / 100.0);
 
-      double mid_dist  = MathAbs(mid_price - open_price);
       double mid_money = 0.0;
-      if(tick_size > 0.0 && tick_value > 0.0)
-         mid_money = NormalizeDouble(mid_dist / tick_size * tick_value * volume, 2);
+      string mid_reason;
+      if(CalcNetRewardMoneyForMove(open_price, mid_price, volume, is_buy, mid_money, mid_reason))
+         mid_money = NormalizeDouble(mid_money, 2);
 
       string mid_text = StringFormat("%.0f%% TP | %s | +$%.2f",
                                       partial_pct, FormatPrice(mid_price), mid_money);
@@ -767,12 +758,12 @@ void UpdateManagedTradeMarkers(const ulong ticket)
 
    if(show_be)
      {
-      double be_dist  = MathAbs(be_price - open_price);
       double be_money = 0.0;
       double be_pct   = 0.0;
-      if(tick_size > 0.0 && tick_value > 0.0)
+      string be_reason;
+      if(CalcNetRewardMoneyForMove(open_price, be_price, volume, is_buy, be_money, be_reason))
         {
-         be_money = NormalizeDouble(be_dist / tick_size * tick_value * volume, 2);
+         be_money = NormalizeDouble(be_money, 2);
          if(balance > 0.0)
             be_pct = NormalizeDouble(be_money / balance * 100.0, 2);
         }

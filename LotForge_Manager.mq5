@@ -93,6 +93,9 @@ input group "=== Risco ==="
 input RiskMode InpRiskMode             = RISK_MODE_LOTS;
 input double   InpRiskPercent          = 1.0;
 
+input group "=== Custos ==="
+input double   InpCommissionPerLot     = 0.0;   // comissão por lado, por 1.00 lote, na moeda da conta
+
 input group "=== Painel ==="
 input int      InpPanelX               = 30;
 input int      InpPanelY               = 40;
