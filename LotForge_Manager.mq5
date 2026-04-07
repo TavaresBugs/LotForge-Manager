@@ -194,8 +194,6 @@ const color  CLR_ALGO_BG           = C'55,130,195';   // mid steel-blue — util
 const color  CLR_ALGO_BORDER       = C'30,90,150';
 
 // ── 6.2: Screen-space overlay label geometry (Position-Sizer style) ──────────
-const string OVL_FONT              = "Arial Bold";
-const int    OVL_FONT_PTS          = 11;   // slightly larger for readability
 const int    OVL_PAD_X             = 4;    // left inset — tight like reference
 const int    OVL_PAD_Y             = 3;    // vertical padding inside box
 const int    OVL_LINE_OFFSET       = -1;   // bar overlaps line 1px — feels attached

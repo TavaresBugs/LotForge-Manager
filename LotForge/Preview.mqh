@@ -103,6 +103,57 @@ bool IsMouseOverPanel(const int mouse_x, const int mouse_y)
   }
 
 //+------------------------------------------------------------------+
+//|  Typography for all handle labels must stay fixed.               |
+//|  No zoom-based font swap and no adaptive font shrink.            |
+//|  When space is tight, we trim the text, not the font.            |
+//+------------------------------------------------------------------+
+
+void MeasureHandleLabelText(const string text, uint &tw, uint &th)
+  {
+   tw = 0;
+   th = 0;
+   TextSetFont("Arial Bold", -110);
+   TextGetSize(text, tw, th);
+
+   if(tw == 0 || th == 0)
+     {
+      tw = (uint)(StringLen(text) * OVL_FALLBACK_CHAR_W);
+      th = (uint)OVL_FALLBACK_H;
+     }
+  }
+
+string FitHandleLabelText(const string text, const int avail_w)
+  {
+   uint tw = 0, th = 0;
+   MeasureHandleLabelText(text, tw, th);
+   if((int)tw <= avail_w)
+      return text;
+
+   string suffix = "...";
+   MeasureHandleLabelText(suffix, tw, th);
+   if((int)tw > avail_w)
+      return "";
+
+   int len = StringLen(text);
+   while(len > 0)
+     {
+      string clipped = StringSubstr(text, 0, len) + suffix;
+      MeasureHandleLabelText(clipped, tw, th);
+      if((int)tw <= avail_w)
+         return clipped;
+      len--;
+     }
+
+   return suffix;
+  }
+
+void ApplyHandleLabelFont(const string obj_name)
+  {
+   ObjectSetString(0, obj_name, OBJPROP_FONT, "Arial Bold");
+   ObjectSetInteger(0, obj_name, OBJPROP_FONTSIZE, 11);
+  }
+
+//+------------------------------------------------------------------+
 //|  ██  3.5: DrawPreviewZone — renderer principal                   |
 //|                                                                  |
 //|  Cria / atualiza dois objetos com o mesmo par (t1, t2):          |
@@ -235,25 +286,11 @@ void UpdateOverlayPreviewLabel(const string kind,
 
    bool bg_exists  = (ObjectFind(0, bg_n)  >= 0);
    bool txt_exists = (ObjectFind(0, txt_n) >= 0);
-   const int FONT_MIN_PTS = 9;
-   int font_pts = OVL_FONT_PTS;
    int avail_w  = MathMax(10, bar_w - 2 * OVL_PAD_X);
+   string fitted_text = FitHandleLabelText(text, avail_w);
 
    uint tw = 0, th = 0;
-   TextSetFont(OVL_FONT, -(font_pts * 10));
-   TextGetSize(text, tw, th);
-   if(tw == 0 || th == 0)
-     { tw = (uint)(StringLen(text) * OVL_FALLBACK_CHAR_W); th = (uint)OVL_FALLBACK_H; }
-
-   while((int)tw > avail_w && font_pts > FONT_MIN_PTS)
-     {
-      font_pts--;
-      TextSetFont(OVL_FONT, -(font_pts * 10));
-      tw = 0; th = 0;
-      TextGetSize(text, tw, th);
-      if(tw == 0 || th == 0)
-        { tw = (uint)(StringLen(text) * OVL_FALLBACK_CHAR_W); th = (uint)OVL_FALLBACK_H; }
-     }
+   MeasureHandleLabelText(fitted_text == "" ? " " : fitted_text, tw, th);
 
    int txt_x = bar_x + OVL_PAD_X;
    int txt_y = box_y + MathMax(1, (OVL_BAR_H - (int)th) / 2 - 1);
@@ -285,11 +322,10 @@ void UpdateOverlayPreviewLabel(const string kind,
       ObjectSetInteger(0, txt_n, OBJPROP_CORNER,     CORNER_LEFT_UPPER);
       ObjectSetInteger(0, txt_n, OBJPROP_ANCHOR,     ANCHOR_LEFT_UPPER);
      }
-   ObjectSetString(0,  txt_n, OBJPROP_FONT,     OVL_FONT);
-   ObjectSetInteger(0, txt_n, OBJPROP_FONTSIZE,   font_pts);
+   ApplyHandleLabelFont(txt_n);
    ObjectSetInteger(0, txt_n, OBJPROP_XDISTANCE, txt_x);
    ObjectSetInteger(0, txt_n, OBJPROP_YDISTANCE, txt_y);
-   ObjectSetString(0,  txt_n, OBJPROP_TEXT,      text);
+   ObjectSetString(0,  txt_n, OBJPROP_TEXT,      fitted_text);
    ObjectSetInteger(0, txt_n, OBJPROP_COLOR,     txt_clr);
   }
 

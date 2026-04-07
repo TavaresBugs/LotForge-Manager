@@ -541,26 +541,11 @@ void UpdateOpenTradeMarker(const string obj_id,
       return;
      }
 
-   // ── Adaptive font size: shrink until text fits ────────────────────
-   const int FONT_MIN_PTS = 9;
-   int font_pts = OVL_FONT_PTS;
    int avail_w  = MathMax(10, bar_w - 2 * OVL_PAD_X);
+   string fitted_text = FitHandleLabelText(text, avail_w);
 
    uint tw = 0, th = 0;
-   TextSetFont(OVL_FONT, -(font_pts * 10));
-   TextGetSize(text, tw, th);
-   if(tw == 0 || th == 0)
-     { tw = (uint)(StringLen(text) * OVL_FALLBACK_CHAR_W); th = (uint)OVL_FALLBACK_H; }
-
-   while((int)tw > avail_w && font_pts > FONT_MIN_PTS)
-     {
-      font_pts--;
-      TextSetFont(OVL_FONT, -(font_pts * 10));
-      tw = 0; th = 0;
-      TextGetSize(text, tw, th);
-      if(tw == 0 || th == 0)
-        { tw = (uint)(StringLen(text) * OVL_FALLBACK_CHAR_W); th = (uint)OVL_FALLBACK_H; }
-     }
+   MeasureHandleLabelText(fitted_text == "" ? " " : fitted_text, tw, th);
 
    int box_h = OVL_BAR_H;
 
@@ -602,11 +587,10 @@ void UpdateOpenTradeMarker(const string obj_id,
       ObjectSetInteger(0, txt_n, OBJPROP_CORNER,     CORNER_LEFT_UPPER);
       ObjectSetInteger(0, txt_n, OBJPROP_ANCHOR,     ANCHOR_LEFT_UPPER);
      }
-   ObjectSetString(0,  txt_n, OBJPROP_FONT,     OVL_FONT);
-   ObjectSetInteger(0, txt_n, OBJPROP_FONTSIZE,  font_pts);
+   ApplyHandleLabelFont(txt_n);
    ObjectSetInteger(0, txt_n, OBJPROP_XDISTANCE, txt_x_pos);
    ObjectSetInteger(0, txt_n, OBJPROP_YDISTANCE, txt_y_pos);
-   ObjectSetString(0,  txt_n, OBJPROP_TEXT,      text);
+   ObjectSetString(0,  txt_n, OBJPROP_TEXT,      fitted_text);
    ObjectSetInteger(0, txt_n, OBJPROP_COLOR,     txt_clr);
   }
 
@@ -922,4 +906,3 @@ double CalcSmartInitDistance()
    // ── 3. Input default (last resort) ───────────────────────────────
    return MathMax(50.0, InpDefaultSlPoints);
   }
-
