@@ -477,7 +477,9 @@ void SyncUiInteractionState()
 
 bool ShouldPauseUiHeavyRefresh()
   {
-   return g_ui_interaction_active;
+   return (g_ui_interaction_active ||
+           g_drag_phase != DRAG_IDLE ||
+           g_native_preview_line_dragging);
   }
 
 void TrackUiInteractionEvent(const int id,
@@ -642,24 +644,28 @@ void CLotForgePanel::OnClickEntryDn(void)
 void CLotForgePanel::OnClickTPUp(void)
   {
    AdjustDistance(g_state.tp_points, +1);
+   ArmMarketPriceTargetsFromCurrentPoints();
    QueueUiRefresh();
   }
 
 void CLotForgePanel::OnClickTPDn(void)
   {
    AdjustDistance(g_state.tp_points, -1);
+   ArmMarketPriceTargetsFromCurrentPoints();
    QueueUiRefresh();
   }
 
 void CLotForgePanel::OnClickSLUp(void)
   {
    AdjustDistance(g_state.sl_points, +1);
+   ArmMarketPriceTargetsFromCurrentPoints();
    QueueUiRefresh();
   }
 
 void CLotForgePanel::OnClickSLDn(void)
   {
    AdjustDistance(g_state.sl_points, -1);
+   ArmMarketPriceTargetsFromCurrentPoints();
    QueueUiRefresh();
   }
 
@@ -702,6 +708,9 @@ void CLotForgePanel::OnClickSend(void)
    text = m_EdtSL.Text();
    if(ParseDoubleText(text, val))
       g_state.sl_points = MathMax(0.0, MathRound(val));
+   if(IsMarketAction(g_state.action) &&
+      (g_state.editing_object == EDIT_TARGET_TP || g_state.editing_object == EDIT_TARGET_SL))
+      ArmMarketPriceTargetsFromCurrentPoints();
    g_ui.refresh_values = true;
    QueueUiCommand(UI_CMD_SEND);
   }
@@ -778,6 +787,7 @@ void CLotForgePanel::OnEndEditTP(void)
    double val;
    if(ParseDoubleText(m_EdtTP.Text(), val))
       g_state.tp_points = MathMax(0.0, MathRound(val));
+   ArmMarketPriceTargetsFromCurrentPoints();
    EndActiveEdit();
    QueueUiRefresh();
   }
@@ -787,6 +797,7 @@ void CLotForgePanel::OnEndEditSL(void)
    double val;
    if(ParseDoubleText(m_EdtSL.Text(), val))
       g_state.sl_points = MathMax(0.0, MathRound(val));
+   ArmMarketPriceTargetsFromCurrentPoints();
    EndActiveEdit();
    QueueUiRefresh();
   }
@@ -840,6 +851,7 @@ void ProcessUiCancel()
    g_status_sticky     = false;
    g_state.action      = ACTION_NONE;
    g_state.entry_price = 0.0;
+   ClearMarketPriceTargets();
    g_state.active_edit = EDIT_TARGET_NONE;
    g_state.edit_in_progress = false;
    g_state.editing_object   = EDIT_TARGET_NONE;
@@ -1051,8 +1063,16 @@ void ProcessUiDispatch()
       TradePanelAction action = g_ui.selected_action;
       g_status_sticky = false;
       g_state.action = action;
-      if(IsMarketAction(action))      g_state.entry_price = 0.0;
-      else if(IsPendingAction(action)) EnsurePendingEntry();
+      if(IsMarketAction(action))
+        {
+         g_state.entry_price = 0.0;
+         ArmMarketPriceTargetsFromCurrentPoints();
+        }
+      else if(IsPendingAction(action))
+        {
+         ClearMarketPriceTargets();
+         EnsurePendingEntry();
+        }
       string lbl = EffectiveActionLabel(action, g_state.entry_price);
       SetStatus("Ação: " + lbl + ". Configure e clique Send.");
      }

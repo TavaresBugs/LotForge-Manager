@@ -2,12 +2,64 @@
 //|  ██  FASE 4A — Planning & Validation Layer                       |
 //+------------------------------------------------------------------+
 
+bool CalcSymbolPnLForMove(const double open_price,
+                          const double close_price,
+                          const double volume,
+                          const bool   is_buy,
+                          double      &out_money,
+                          string      &out_reason)
+  {
+   out_money  = 0.0;
+   out_reason = "";
+
+   if(open_price <= 0.0 || close_price <= 0.0)
+     {
+      out_reason = "Erro: preços inválidos para cálculo financeiro.";
+      return false;
+     }
+   if(volume <= 0.0)
+     {
+      out_reason = "Erro: volume inválido para cálculo financeiro.";
+      return false;
+     }
+
+   ENUM_ORDER_TYPE order_type = is_buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   if(OrderCalcProfit(order_type, _Symbol, volume, open_price, close_price, out_money))
+      return true;
+
+   double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tick_size <= 0.0)
+     {
+      out_reason = "Erro: tick size indisponível para cálculo financeiro.";
+      return false;
+     }
+
+   bool is_profit_move = (is_buy && close_price > open_price) ||
+                         (!is_buy && close_price < open_price);
+   double tick_value = SymbolInfoDouble(
+      _Symbol,
+      is_profit_move ? SYMBOL_TRADE_TICK_VALUE_PROFIT
+                     : SYMBOL_TRADE_TICK_VALUE_LOSS);
+   if(tick_value <= 0.0)
+      tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   if(tick_value <= 0.0)
+     {
+      out_reason = "Erro: tick value indisponível para cálculo financeiro.";
+      return false;
+     }
+
+   double price_dist = MathAbs(close_price - open_price);
+   double money_abs  = price_dist / tick_size * tick_value * volume;
+   out_money = is_profit_move ? money_abs : -money_abs;
+   return true;
+  }
+
 //+------------------------------------------------------------------+
 //|  CalcLotsFromRiskPercent                                         |
 //|                                                                  |
 //|  Derives position size from account risk %.                      |
-//|  Formula: lots = RiskMoney * TickSize / (SLDist * TickValue)     |
-//|  where SLDist = MathAbs(entry_price - sl_price) in price units.  |
+//|  Uses symbol-aware profit/loss for a 1-lot move from entry to SL |
+//|  then scales lots conservatively to the broker step grid.        |
 //|                                                                  |
 //|  Returns false (with out_lots = 0) on any invalid input or       |
 //|  data unavailability — no silent fallbacks.                      |
@@ -33,12 +85,6 @@ bool CalcLotsFromRiskPercent(const double entry_price, const double sl_price,
    if(!is_buy && sl_price <= entry_price)
      { out_reason = "Erro: SL de venda deve estar acima da entrada."; return false; }
 
-   // ── Symbol economics ──────────────────────────────────────────────
-   double tick_size  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   double tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   if(tick_size <= 0.0 || tick_value <= 0.0)
-     { out_reason = "Erro: dados de tick do símbolo indisponíveis."; return false; }
-
    // ── Account base ─────────────────────────────────────────────────
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    if(balance <= 0.0)
@@ -48,8 +94,11 @@ bool CalcLotsFromRiskPercent(const double entry_price, const double sl_price,
      { out_reason = "Erro: percentual de risco resulta em valor zero."; return false; }
 
    // ── Core formula ──────────────────────────────────────────────────
-   // loss per lot = (sl_dist / tick_size) * tick_value
-   double loss_per_lot = sl_dist / tick_size * tick_value;
+   double pnl_per_lot = 0.0;
+   if(!CalcSymbolPnLForMove(entry_price, sl_price, 1.0, is_buy, pnl_per_lot, out_reason))
+      return false;
+
+   double loss_per_lot = MathAbs(pnl_per_lot);
    if(loss_per_lot <= 0.0)
      { out_reason = "Erro: custo por lote calculado como zero."; return false; }
 
@@ -104,37 +153,24 @@ bool BuildTradePlan(TradeParams &params, string &out_reason)
    bool is_market = IsMarketAction(g_state.action);
 
    // ── 1. Effective entry price ──────────────────────────────────────
-   double entry;
-   if(is_market)
-      entry = CurrentReferencePrice(is_buy);
-   else
-      entry = g_state.entry_price;
+   double entry = EffectiveStateEntryPrice(g_state.action);
 
    if(entry <= 0.0)
      { out_reason = "Preço de entrada indisponível."; return false; }
    params.entry_price = NormalizePriceValue(entry);
 
-   // ── 2. SL / TP prices from distance points ────────────────────────
-   double sl_pts = g_state.sl_points;
-   double tp_pts = g_state.tp_points;
+   if(is_market)
+      SyncMarketPointsFromAbsoluteTargets(params.entry_price);
 
-   params.sl_points = sl_pts;
-   params.tp_points = tp_pts;
-
-   if(is_buy)
-     {
-      params.sl_price = NormalizePriceValue(params.entry_price - sl_pts * _Point);
-      params.tp_price = (tp_pts > 0.0)
-                        ? NormalizePriceValue(params.entry_price + tp_pts * _Point)
-                        : 0.0;
-     }
-   else
-     {
-      params.sl_price = NormalizePriceValue(params.entry_price + sl_pts * _Point);
-      params.tp_price = (tp_pts > 0.0)
-                        ? NormalizePriceValue(params.entry_price - tp_pts * _Point)
-                        : 0.0;
-     }
+   // ── 2. SL / TP prices from effective state ───────────────────────
+   params.sl_price  = EffectiveStateSLPrice(g_state.action, params.entry_price);
+   params.tp_price  = EffectiveStateTPPrice(g_state.action, params.entry_price);
+   params.sl_points = (params.sl_price > 0.0)
+                      ? MathMax(0.0, MathRound(MathAbs(params.entry_price - params.sl_price) / _Point))
+                      : 0.0;
+   params.tp_points = (params.tp_price > 0.0)
+                      ? MathMax(0.0, MathRound(MathAbs(params.tp_price - params.entry_price) / _Point))
+                      : 0.0;
 
    // ── 3. Lots ───────────────────────────────────────────────────────
    if(g_state.risk_mode == RISK_MODE_PERCENT)
@@ -157,22 +193,25 @@ bool BuildTradePlan(TradeParams &params, string &out_reason)
      { out_reason = "Lotes inválidos."; return false; }
 
    // ── 4. R:R ratio ─────────────────────────────────────────────────
-   params.rr_ratio = (sl_pts > 0.0 && tp_pts > 0.0)
-                     ? NormalizeDouble(tp_pts / sl_pts, 2)
+   params.rr_ratio = (params.sl_points > 0.0 && params.tp_points > 0.0)
+                     ? NormalizeDouble(params.tp_points / params.sl_points, 2)
                      : 0.0;
 
    // ── 5. Risk / Reward money ────────────────────────────────────────
-   double tick_size  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   double tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   if(tick_size > 0.0 && tick_value > 0.0 && sl_pts > 0.0)
+   if(params.sl_points > 0.0)
      {
-      double sl_dist = MathAbs(params.entry_price - params.sl_price);
-      params.risk_money = NormalizeDouble(sl_dist / tick_size * tick_value * params.lots, 2);
+      double risk_money = 0.0;
+      string money_reason;
+      if(CalcSymbolPnLForMove(params.entry_price, params.sl_price, params.lots,
+                              is_buy, risk_money, money_reason))
+         params.risk_money = NormalizeDouble(MathAbs(risk_money), 2);
 
-      if(tp_pts > 0.0)
+      if(params.tp_points > 0.0)
         {
-         double tp_dist = MathAbs(params.tp_price - params.entry_price);
-         params.reward_money = NormalizeDouble(tp_dist / tick_size * tick_value * params.lots, 2);
+         double reward_money = 0.0;
+         if(CalcSymbolPnLForMove(params.entry_price, params.tp_price, params.lots,
+                                 is_buy, reward_money, money_reason))
+            params.reward_money = NormalizeDouble(MathAbs(reward_money), 2);
         }
 
       if(g_state.risk_mode == RISK_MODE_LOTS)
@@ -356,6 +395,7 @@ void ClearTradeDraftAfterSuccessfulSend()
   {
    g_state.action      = ACTION_NONE;
    g_state.entry_price = 0.0;
+   ClearMarketPriceTargets();
    g_state.active_edit = EDIT_TARGET_NONE;
    // Não tocar no status — a mensagem de sucesso permanece visível
   }

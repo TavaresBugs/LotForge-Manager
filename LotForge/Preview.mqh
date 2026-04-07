@@ -31,6 +31,58 @@ void AdjustDistance(double &distance_points, const int direction)
 //|  EnsurePreviewLine — OBJ_HLINE para as três linhas horizontais   |
 //+------------------------------------------------------------------+
 
+bool IsPreviewLineUnderNativeDrag(const string kind)
+  {
+   return (g_native_preview_line_dragging && g_native_preview_line_kind == kind);
+  }
+
+bool PreviewLinePriceMoved(const string kind, const double expected_price)
+  {
+   if(expected_price <= 0.0)
+      return false;
+
+   string name = PREV_PFX + kind + "_line";
+   if(ObjectFind(0, name) < 0)
+      return false;
+   if(!ObjectGetInteger(0, name, OBJPROP_SELECTED))
+      return false;
+
+   double live_price = ObjectGetDouble(0, name, OBJPROP_PRICE);
+   if(live_price <= 0.0)
+      return false;
+
+   double tol = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tol <= 0.0)
+      tol = _Point;
+
+   return (MathAbs(live_price - expected_price) > tol * 0.5);
+  }
+
+void RefreshNativePreviewLineDragState(const bool btn_down)
+  {
+   if(!btn_down || g_state.action == ACTION_NONE || !InpShowPreview)
+     {
+      g_native_preview_line_dragging = false;
+      g_native_preview_line_kind     = "";
+      return;
+     }
+
+   double entry_price = EffectiveStateEntryPrice(g_state.action);
+   double sl_price    = EffectiveStateSLPrice(g_state.action, entry_price);
+   double tp_price    = EffectiveStateTPPrice(g_state.action, entry_price);
+
+   string moved_kind = "";
+   if(IsPendingAction(g_state.action) && PreviewLinePriceMoved("entry", entry_price))
+      moved_kind = "entry";
+   else if(PreviewLinePriceMoved("sl", sl_price))
+      moved_kind = "sl";
+   else if(PreviewLinePriceMoved("tp", tp_price))
+      moved_kind = "tp";
+
+   g_native_preview_line_dragging = (moved_kind != "");
+   g_native_preview_line_kind     = moved_kind;
+  }
+
 void EnsurePreviewLine(const string kind,
                        const double price,
                        const color  clr,
@@ -44,10 +96,14 @@ void EnsurePreviewLine(const string kind,
       if(!ObjectCreate(0, name, OBJ_HLINE, 0, TimeCurrent(), price)) return;
       ObjectSetInteger(0, name, OBJPROP_HIDDEN,     false);
       ObjectSetInteger(0, name, OBJPROP_SELECTED,   false);
-      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, true);   // native drag via CHARTEVENT_OBJECT_DRAG
       ObjectSetInteger(0, name, OBJPROP_BACK,       false);  // foreground — clickable
      }
-   ObjectSetDouble(0,  name, OBJPROP_PRICE,   price);
+   bool selectable = (kind != "entry" || IsPendingAction(g_state.action));
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, selectable);   // native drag via CHARTEVENT_OBJECT_DRAG
+   if(!selectable)
+      ObjectSetInteger(0, name, OBJPROP_SELECTED, false);
+   if(!IsPreviewLineUnderNativeDrag(kind))
+      ObjectSetDouble(0,  name, OBJPROP_PRICE, price);
    ObjectSetInteger(0, name, OBJPROP_COLOR,   clr);
    ObjectSetInteger(0, name, OBJPROP_STYLE,   line_style);
    ObjectSetInteger(0, name, OBJPROP_WIDTH,   line_width);
@@ -153,6 +209,52 @@ void ApplyHandleLabelFont(const string obj_name)
    ObjectSetInteger(0, obj_name, OBJPROP_FONTSIZE, 11);
   }
 
+bool FitHandleBarOutsidePanel(int &bar_x, int &bar_w, const int box_y, const int box_h)
+  {
+   if(bar_w < 1)
+      return false;
+
+   int panel_x1 = (int)g_panel.Left();
+   int panel_y1 = (int)g_panel.Top();
+   int panel_x2 = (int)g_panel.Right();
+   int panel_y2 = (int)g_panel.Bottom();
+
+   if(panel_x2 <= panel_x1 || panel_y2 <= panel_y1)
+      return true;
+
+   int bar_x2 = bar_x + bar_w;
+   int bar_y2 = box_y + box_h;
+
+   bool overlap_x = !(bar_x2 <= panel_x1 || bar_x >= panel_x2);
+   bool overlap_y = !(bar_y2 <= panel_y1 || box_y >= panel_y2);
+   if(!overlap_x || !overlap_y)
+      return true;
+
+   const int gap = 4;
+   int left_x1  = bar_x;
+   int left_x2  = MathMin(bar_x2, panel_x1 - gap);
+   int left_w   = left_x2 - left_x1;
+   int right_x1 = MathMax(bar_x, panel_x2 + gap);
+   int right_x2 = bar_x2;
+   int right_w  = right_x2 - right_x1;
+
+   if(right_w >= left_w && right_w > 0)
+     {
+      bar_x = right_x1;
+      bar_w = right_w;
+     }
+   else if(left_w > 0)
+     {
+      bar_w = left_w;
+     }
+   else
+     {
+      return false;
+     }
+
+   return (bar_w > (2 * OVL_PAD_X + 8));
+  }
+
 //+------------------------------------------------------------------+
 //|  ██  3.5: DrawPreviewZone — renderer principal                   |
 //|                                                                  |
@@ -247,7 +349,7 @@ void EraseOverlayLabel(const string kind)
 //|  OBJ_LABEL pair positioned from price via ChartTimePriceToXY.    |
 //|  Both objects live in screen-space (CORNER_LEFT_UPPER +           |
 //|  XDISTANCE/YDISTANCE), OBJPROP_BACK=false — floats above chart   |
-//|  and can visually overlap the CAppDialog panel.                   |
+//|  but get clipped away from the menu rectangle when overlapping.   |
 //|                                                                   |
 //|  Always recomputes layout from the current chart geometry/text.   |
 //|  This avoids visual drift from cached width/height assumptions.   |
@@ -283,6 +385,13 @@ void UpdateOverlayPreviewLabel(const string kind,
 
    string bg_n  = PREV_PFX + kind + "_ovbg";
    string txt_n = PREV_PFX + kind + "_ovtxt";
+
+   if(!FitHandleBarOutsidePanel(bar_x, bar_w, box_y, box_h))
+     {
+      if(ObjectFind(0, bg_n)  >= 0) ObjectDelete(0, bg_n);
+      if(ObjectFind(0, txt_n) >= 0) ObjectDelete(0, txt_n);
+      return;
+     }
 
    bool bg_exists  = (ObjectFind(0, bg_n)  >= 0);
    bool txt_exists = (ObjectFind(0, txt_n) >= 0);
@@ -508,25 +617,17 @@ void UpdatePreview(const bool do_redraw)
 
 
    bool is_buy    = IsBuyAction(g_state.action);
-   bool is_market = IsMarketAction(g_state.action);
-
-   double entry_price = is_market ? CurrentReferencePrice(is_buy) : g_state.entry_price;
+   double entry_price = EffectiveStateEntryPrice(g_state.action);
    if(entry_price <= 0.0)
      {
       DeletePreviewObjects();
       return;
      }
+   double sl_price = EffectiveStateSLPrice(g_state.action, entry_price);
+   double tp_price = EffectiveStateTPPrice(g_state.action, entry_price);
 
-   double pt       = _Point;
-   double sl_price = 0.0;
-   double tp_price = 0.0;
-
-   if(g_state.sl_points > 0.0)
-      sl_price = NormalizePriceValue(is_buy ? entry_price - g_state.sl_points * pt
-                                           : entry_price + g_state.sl_points * pt);
-   if(g_state.tp_points > 0.0)
-      tp_price = NormalizePriceValue(is_buy ? entry_price + g_state.tp_points * pt
-                                           : entry_price - g_state.tp_points * pt);
+   if(IsMarketAction(g_state.action))
+      SyncMarketPointsFromAbsoluteTargets(entry_price);
 
    // ── Attempt real plan for financial labels ────────────────────────
    // Two-stage check: build must succeed AND validation must pass.
@@ -597,23 +698,9 @@ string DetectOverlayBarHit(const int mx, const int my)
   {
    if(IsMouseOverPanel(mx, my)) return "";
 
-   bool   is_buy    = IsBuyAction(g_state.action);
-   bool   is_market = IsMarketAction(g_state.action);
-   double pt        = _Point;
-
-   double entry_p = is_market ? CurrentReferencePrice(is_buy) : g_state.entry_price;
-   double sl_p    = 0.0;
-   double tp_p    = 0.0;
-
-   if(entry_p > 0.0)
-     {
-      if(g_state.sl_points > 0.0)
-         sl_p = NormalizePriceValue(is_buy ? entry_p - g_state.sl_points * pt
-                                           : entry_p + g_state.sl_points * pt);
-      if(g_state.tp_points > 0.0)
-         tp_p = NormalizePriceValue(is_buy ? entry_p + g_state.tp_points * pt
-                                           : entry_p - g_state.tp_points * pt);
-     }
+   double entry_p = EffectiveStateEntryPrice(g_state.action);
+   double sl_p    = EffectiveStateSLPrice(g_state.action, entry_p);
+   double tp_p    = EffectiveStateTPPrice(g_state.action, entry_p);
 
    // ── Overlay bar rectangles (large easy targets) ──────────────────
    {
@@ -714,6 +801,8 @@ void ApplyLineDrag(const int mx, const int my)
          bool ok = is_buy ? (new_price < ref_e) : (new_price > ref_e);
          if(!ok) new_price = NormalizePriceValue(is_buy ? ref_e - min_tick : ref_e + min_tick);
          g_state.sl_points = MathMax(1.0, MathRound(MathAbs(new_price - ref_e) / _Point));
+         if(is_market)
+            g_state.market_sl_price = new_price;
         }
      }
    else if(g_drag_line_kind == "tp")
@@ -725,6 +814,8 @@ void ApplyLineDrag(const int mx, const int my)
          bool ok = is_buy ? (new_price > ref_e) : (new_price < ref_e);
          if(!ok) new_price = NormalizePriceValue(is_buy ? ref_e + min_tick : ref_e - min_tick);
          g_state.tp_points = MathMax(1.0, MathRound(MathAbs(new_price - ref_e) / _Point));
+         if(is_market)
+            g_state.market_tp_price = new_price;
         }
      }
   }
@@ -798,6 +889,8 @@ void HandleNativeLineDrag(const string obj_name)
          bool ok = is_buy ? (new_price < ref_e) : (new_price > ref_e);
          if(!ok) new_price = NormalizePriceValue(is_buy ? ref_e - min_tick : ref_e + min_tick);
          g_state.sl_points = MathMax(1.0, MathRound(MathAbs(new_price - ref_e) / _Point));
+         if(is_market)
+            g_state.market_sl_price = new_price;
         }
      }
    else if(obj_name == tp_ln)
@@ -809,6 +902,8 @@ void HandleNativeLineDrag(const string obj_name)
          bool ok = is_buy ? (new_price > ref_e) : (new_price < ref_e);
          if(!ok) new_price = NormalizePriceValue(is_buy ? ref_e + min_tick : ref_e - min_tick);
          g_state.tp_points = MathMax(1.0, MathRound(MathAbs(new_price - ref_e) / _Point));
+         if(is_market)
+            g_state.market_tp_price = new_price;
         }
      }
    else
@@ -818,6 +913,8 @@ void HandleNativeLineDrag(const string obj_name)
 
    // Deselect the line so it doesn't stay highlighted with anchor points
    ObjectSetInteger(0, obj_name, OBJPROP_SELECTED, false);
+   g_native_preview_line_dragging = false;
+   g_native_preview_line_kind     = "";
 
    g_panel.RefreshValues();
    UpdatePreview();
@@ -842,6 +939,8 @@ void HandleMouseMoveDrag(const long   mouse_x_l,
    int mx = (int)mouse_x_l;
    int my = (int)mouse_y_d;
 
+   RefreshNativePreviewLineDragState(btn_down);
+
    // ── Release: clean up any active overlay drag ────────────────────
    if(!btn_down)
      {
@@ -863,6 +962,9 @@ void HandleMouseMoveDrag(const long   mouse_x_l,
 
    // ── CRITICAL GUARD: if mouse is over the panel, never start a drag ──
    if(g_drag_phase == DRAG_IDLE && IsMouseOverPanel(mx, my))
+      return;
+
+   if(g_native_preview_line_dragging)
       return;
 
    if(g_drag_phase == DRAG_IDLE)

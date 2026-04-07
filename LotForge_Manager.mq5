@@ -239,6 +239,8 @@ struct PanelState
    double            entry_price;
    double            sl_points;
    double            tp_points;
+   double            market_sl_price;
+   double            market_tp_price;
    string            order_comment;
 
    RiskMode          risk_mode;
@@ -341,6 +343,12 @@ string  FormatPercent(const double value);
 double  CurrentReferencePrice(const bool is_buy);
 double  CurrentMidPrice();
 bool    ParseDoubleText(string text, double &value);
+void    ClearMarketPriceTargets();
+void    ArmMarketPriceTargetsFromCurrentPoints();
+void    SyncMarketPointsFromAbsoluteTargets(const double entry_price);
+double  EffectiveStateEntryPrice(const TradePanelAction action);
+double  EffectiveStateSLPrice(const TradePanelAction action, const double entry_price);
+double  EffectiveStateTPPrice(const TradePanelAction action, const double entry_price);
 bool    BuildTradePlan(TradeParams &params, string &out_reason);
 bool    CalcLotsFromRiskPercent(const double entry_price, const double sl_price,
                                 const bool is_buy, double &out_lots, string &out_reason);
@@ -526,6 +534,8 @@ DragPhase        g_drag_phase        = DRAG_IDLE;
 string           g_drag_line_kind    = "";
 int              g_drag_press_x      = 0;
 int              g_drag_press_y      = 0;
+bool             g_native_preview_line_dragging = false;
+string           g_native_preview_line_kind     = "";
 
 bool             g_scroll_was_enabled = true;
 bool             g_scroll_suppressed  = false;

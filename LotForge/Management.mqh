@@ -22,6 +22,8 @@ void PanelState::Init()
    entry_price = 0.0;
    sl_points   = MathMax(0.0, MathRound(InpDefaultSlPoints));
    tp_points   = MathMax(0.0, MathRound(InpDefaultTpPoints));
+   market_sl_price = 0.0;
+   market_tp_price = 0.0;
    order_comment      = "";
    risk_mode          = InpRiskMode;
    risk_percent       = InpRiskPercent;
@@ -541,20 +543,25 @@ void UpdateOpenTradeMarker(const string obj_id,
       return;
      }
 
-   int avail_w  = MathMax(10, bar_w - 2 * OVL_PAD_X);
-   string fitted_text = FitHandleLabelText(text, avail_w);
-
-   uint tw = 0, th = 0;
-   MeasureHandleLabelText(fitted_text == "" ? " " : fitted_text, tw, th);
-
    int box_h = OVL_BAR_H;
-
-   // ── Vertical placement (same model as preview handles) ────────────
    int box_y;
    if(above_line)
       box_y = py - OVL_LINE_OFFSET - box_h;
    else
       box_y = py + OVL_LINE_OFFSET;
+
+   if(!FitHandleBarOutsidePanel(bar_x, bar_w, box_y, box_h))
+     {
+      if(ObjectFind(0, bg_n)  >= 0) ObjectDelete(0, bg_n);
+      if(ObjectFind(0, txt_n) >= 0) ObjectDelete(0, txt_n);
+      return;
+     }
+
+   int avail_w  = MathMax(10, bar_w - 2 * OVL_PAD_X);
+   string fitted_text = FitHandleLabelText(text, avail_w);
+
+   uint tw = 0, th = 0;
+   MeasureHandleLabelText(fitted_text == "" ? " " : fitted_text, tw, th);
 
    // ── Text position ─────────────────────────────────────────────────
    int txt_x_pos = bar_x + OVL_PAD_X;
@@ -846,6 +853,8 @@ void SaveStateForChartChange()
    GlobalVariableSet(GV_PFX + "entry",  g_state.entry_price);
    GlobalVariableSet(GV_PFX + "sl",     g_state.sl_points);
    GlobalVariableSet(GV_PFX + "tp",     g_state.tp_points);
+   GlobalVariableSet(GV_PFX + "msl",    g_state.market_sl_price);
+   GlobalVariableSet(GV_PFX + "mtp",    g_state.market_tp_price);
    GlobalVariableSet(GV_PFX + "px",     (double)g_state.panel_x);
    GlobalVariableSet(GV_PFX + "py",     (double)g_state.panel_y);
    GlobalVariableSet(GV_PFX + "mini",   g_state.minimized ? 1.0 : 0.0);
@@ -863,6 +872,8 @@ bool RestoreStateFromChartChange()
    g_state.entry_price  = GlobalVariableGet(GV_PFX + "entry");
    g_state.sl_points    = GlobalVariableGet(GV_PFX + "sl");
    g_state.tp_points    = GlobalVariableGet(GV_PFX + "tp");
+   g_state.market_sl_price = GlobalVariableCheck(GV_PFX + "msl") ? GlobalVariableGet(GV_PFX + "msl") : 0.0;
+   g_state.market_tp_price = GlobalVariableCheck(GV_PFX + "mtp") ? GlobalVariableGet(GV_PFX + "mtp") : 0.0;
    g_state.panel_x      = (int)GlobalVariableGet(GV_PFX + "px");
    g_state.panel_y      = (int)GlobalVariableGet(GV_PFX + "py");
    g_state.minimized    = GlobalVariableGet(GV_PFX + "mini") > 0.5;

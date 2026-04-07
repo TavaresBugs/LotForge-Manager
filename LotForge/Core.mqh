@@ -140,6 +140,93 @@ bool ParseDoubleText(string text, double &value)
    return true;
   }
 
+void ClearMarketPriceTargets()
+  {
+   g_state.market_sl_price = 0.0;
+   g_state.market_tp_price = 0.0;
+  }
+
+void ArmMarketPriceTargetsFromCurrentPoints()
+  {
+   if(!IsMarketAction(g_state.action))
+     {
+      ClearMarketPriceTargets();
+      return;
+     }
+
+   bool is_buy = IsBuyAction(g_state.action);
+   double entry_price = CurrentReferencePrice(is_buy);
+   if(entry_price <= 0.0)
+     {
+      ClearMarketPriceTargets();
+      return;
+     }
+
+   if(g_state.sl_points > 0.0)
+      g_state.market_sl_price = NormalizePriceValue(
+         is_buy ? entry_price - g_state.sl_points * _Point
+                : entry_price + g_state.sl_points * _Point);
+   else
+      g_state.market_sl_price = 0.0;
+
+   if(g_state.tp_points > 0.0)
+      g_state.market_tp_price = NormalizePriceValue(
+         is_buy ? entry_price + g_state.tp_points * _Point
+                : entry_price - g_state.tp_points * _Point);
+   else
+      g_state.market_tp_price = 0.0;
+  }
+
+void SyncMarketPointsFromAbsoluteTargets(const double entry_price)
+  {
+   if(!IsMarketAction(g_state.action) || entry_price <= 0.0)
+      return;
+
+   if(g_state.market_sl_price > 0.0)
+      g_state.sl_points = MathMax(0.0, MathRound(MathAbs(g_state.market_sl_price - entry_price) / _Point));
+   if(g_state.market_tp_price > 0.0)
+      g_state.tp_points = MathMax(0.0, MathRound(MathAbs(g_state.market_tp_price - entry_price) / _Point));
+  }
+
+double EffectiveStateEntryPrice(const TradePanelAction action)
+  {
+   if(IsMarketAction(action))
+      return CurrentReferencePrice(IsBuyAction(action));
+   return g_state.entry_price;
+  }
+
+double EffectiveStateSLPrice(const TradePanelAction action, const double entry_price)
+  {
+   if(entry_price <= 0.0)
+      return 0.0;
+
+   if(IsMarketAction(action) && g_state.market_sl_price > 0.0)
+      return NormalizePriceValue(g_state.market_sl_price);
+
+   if(g_state.sl_points <= 0.0)
+      return 0.0;
+
+   bool is_buy = IsBuyAction(action);
+   return NormalizePriceValue(is_buy ? entry_price - g_state.sl_points * _Point
+                                     : entry_price + g_state.sl_points * _Point);
+  }
+
+double EffectiveStateTPPrice(const TradePanelAction action, const double entry_price)
+  {
+   if(entry_price <= 0.0)
+      return 0.0;
+
+   if(IsMarketAction(action) && g_state.market_tp_price > 0.0)
+      return NormalizePriceValue(g_state.market_tp_price);
+
+   if(g_state.tp_points <= 0.0)
+      return 0.0;
+
+   bool is_buy = IsBuyAction(action);
+   return NormalizePriceValue(is_buy ? entry_price + g_state.tp_points * _Point
+                                     : entry_price - g_state.tp_points * _Point);
+  }
+
 //+------------------------------------------------------------------+
 //|  SetStatus / EnsurePendingEntry                                  |
 //+------------------------------------------------------------------+
@@ -183,6 +270,8 @@ void ResetDragState()
    g_drag_line_kind = "";
    g_drag_press_x   = 0;
    g_drag_press_y   = 0;
+   g_native_preview_line_dragging = false;
+   g_native_preview_line_kind     = "";
    RestoreChartScroll();
   }
 
@@ -210,4 +299,3 @@ void DeleteByPrefix()
          ObjectDelete(0, n);
      }
   }
-
