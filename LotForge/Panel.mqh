@@ -428,6 +428,15 @@ bool CLotForgePanel::IsMouseOverPanel(const int mx, const int my)
    return (mx >= x1 && mx <= x2 && my >= y1 && my <= y2);
   }
 
+bool CLotForgePanel::IsMouseNearPanel(const int mx, const int my)
+  {
+   int x1 = (int)Left()   - PANEL_PROXIMITY_PX;
+   int y1 = (int)Top()    - PANEL_PROXIMITY_PX;
+   int x2 = (int)Right()  + PANEL_PROXIMITY_PX;
+   int y2 = (int)Bottom() + PANEL_PROXIMITY_PX;
+   return (mx >= x1 && mx <= x2 && my >= y1 && my <= y2);
+  }
+
 void CLotForgePanel::BeginActiveEdit(const CompactEditTarget target)
   {
    g_state.edit_in_progress = (target != EDIT_TARGET_NONE);
@@ -472,7 +481,9 @@ CompactEditTarget CLotForgePanel::ResolveEditTarget(const string obj_name)
 
 void SyncUiInteractionState()
   {
-   g_ui_interaction_active = (g_panel_dragging || g_state.edit_in_progress);
+   g_ui_interaction_active = (g_panel_dragging ||
+                              g_panel_manual_dragging ||
+                              g_state.edit_in_progress);
   }
 
 bool ShouldPauseUiHeavyRefresh()
@@ -561,7 +572,9 @@ bool CLotForgePanel::OnDialogDragEnd(void)
    SyncUiInteractionState();
    RememberPanelState();
    if(g_state.action != ACTION_NONE)
-      UpdatePreview();
+      UpdatePreviewGeometryOnly();
+   if(!RefreshManagedTradeMarkersGeometryOnly())
+      RefreshAllManagedTradeMarkers();
    return handled;
   }
 
@@ -711,6 +724,7 @@ void CLotForgePanel::OnClickSend(void)
    if(IsMarketAction(g_state.action) &&
       (g_state.editing_object == EDIT_TARGET_TP || g_state.editing_object == EDIT_TARGET_SL))
       ArmMarketPriceTargetsFromCurrentPoints();
+   MarkPreviewDirty();
    g_ui.refresh_values = true;
    QueueUiCommand(UI_CMD_SEND);
   }
@@ -820,7 +834,11 @@ void QueueUiRefresh(const bool refresh_values,
       g_panel.EndActiveEdit();
 
    if(refresh_values)  g_ui.refresh_values = true;
-   if(refresh_preview) g_ui.refresh_preview = true;
+   if(refresh_preview)
+     {
+      MarkPreviewDirty();
+      g_ui.refresh_preview = true;
+     }
    if(redraw)          g_ui.redraw = true;
   }
 
@@ -838,6 +856,7 @@ void QueueUiOrderSelection(const TradePanelAction action)
    if(g_state.edit_in_progress)
       g_panel.EndActiveEdit();
 
+   MarkPreviewDirty();
    g_ui.has_order_selection    = true;
    g_ui.selected_action        = action;
    g_ui.refresh_action_buttons = true;
@@ -1103,7 +1122,9 @@ void ProcessUiDispatch()
       UpdatePreview(false);
 
    if(g_ui.redraw)
-      ChartRedraw(0);
+      RequestChartRedraw();
+
+   FlushPendingChartRedraw();
 
    g_ui.Reset();
   }

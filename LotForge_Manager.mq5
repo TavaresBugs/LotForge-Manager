@@ -146,6 +146,7 @@ const int    COMMENT_BOX_H         = 22;
 
 const int    DRAG_THRESHOLD_PX     = 4;
 const int    LINE_HIT_TOL_PX       = 9;
+const int    PANEL_PROXIMITY_PX    = 16;
 
 const double ENTRY_BAND_HALF_PTS   = 3.0;
 
@@ -203,6 +204,15 @@ const int    OVL_LINE_OFFSET       = -1;   // bar overlaps line 1px — feels at
 const int    OVL_FALLBACK_CHAR_W   = 7;    // px per char if TextGetSize returns 0
 const int    OVL_FALLBACK_H        = 20;   // matches OVL_BAR_H
 const int    OVL_BAR_H             = 20;   // v1.09: increased from 18 for better drag target
+const int    OVL_HIT_PAD_PX        = 4;    // easier overlay drag capture around the handle
+enum
+  {
+   HANDLE_TEXT_MEASURE_CACHE_SIZE = 48,
+   HANDLE_TEXT_FIT_CACHE_SIZE     = 48
+  };
+
+const ulong  SYMBOL_METADATA_TTL_MS = 10000;
+const bool   PERF_TRACE_ENABLED     = false;
 
 
 //+------------------------------------------------------------------+
@@ -317,6 +327,97 @@ struct UiDispatchState
      }
   };
 
+struct PreviewSnapshot
+  {
+   bool              visible;
+   TradePanelAction  action;
+   bool              is_buy;
+   double            entry_price;
+   double            sl_price;
+   double            tp_price;
+   bool              plan_valid;
+   double            plan_lots;
+   double            risk_money;
+   double            reward_money;
+   double            risk_pct;
+   double            reward_pct;
+   string            effective_label;
+   string            short_label;
+   string            entry_line_tooltip;
+   string            sl_line_tooltip;
+   string            tp_line_tooltip;
+   string            en_label;
+   string            sl_label;
+   string            tp_label;
+
+   void              Clear();
+  };
+
+struct SymbolRuntimeMetadata
+  {
+   bool              valid;
+   string            symbol;
+   int               digits;
+   double            volume_min;
+   double            volume_max;
+   double            volume_step;
+   double            tick_size;
+   int               stops_level;
+   int               freeze_level;
+   ulong             revision;
+   ulong             last_refresh_ms;
+
+   void              Clear();
+  };
+
+struct PreviewFinancialKey
+  {
+   bool              valid;
+   TradePanelAction  action;
+   RiskMode          risk_mode;
+   double            risk_percent;
+   double            lots;
+   double            entry_price;
+   double            sl_price;
+   double            tp_price;
+   double            sl_points;
+   double            tp_points;
+   double            account_balance;
+   ulong             metadata_revision;
+
+   void              Clear();
+  };
+
+struct PreviewFinancialState
+  {
+   bool              ready;
+   bool              plan_built;
+   bool              plan_valid;
+   TradeParams       plan;
+   string            build_reason;
+   string            validation_message;
+
+   void              Clear();
+  };
+
+struct HandleTextMeasureCacheEntry
+  {
+   bool              valid;
+   string            text;
+   uint              width;
+   uint              height;
+  };
+
+struct HandleTextFitCacheEntry
+  {
+   bool              valid;
+   string            text;
+   int               avail_w;
+   string            fitted_text;
+   uint              width;
+   uint              height;
+  };
+
 //+------------------------------------------------------------------+
 //|  ██  VARIÁVEIS GLOBAIS                                           |
 //+------------------------------------------------------------------+
@@ -334,6 +435,15 @@ PendingSubtype  DerivePendingSubtype(const TradePanelAction action, const double
 string  PendingSubtypeLabel(const PendingSubtype subtype);
 string  EffectiveActionLabel(const TradePanelAction action, const double entry_price);
 string  ShortPreviewLabel(const TradePanelAction action, const double entry_price);
+bool    RefreshSymbolRuntimeMetadata(const bool force = false);
+int     SymbolDigitsCached();
+double  SymbolVolumeMinCached();
+double  SymbolVolumeMaxCached();
+double  SymbolVolumeStepCached();
+double  SymbolTickSizeCached();
+int     SymbolStopsLevelCached();
+int     SymbolFreezeLevelCached();
+ulong   CurrentSymbolMetadataRevision();
 int     PriceDigits();
 int     VolumeDigits();
 double  NormalizePriceValue(const double price);
@@ -371,6 +481,8 @@ void    QueueUiOrderSelection(const TradePanelAction action);
 void    ProcessUiDispatch();
 void    SyncUiInteractionState();
 bool    ShouldPauseUiHeavyRefresh();
+void    RequestChartRedraw();
+void    FlushPendingChartRedraw();
 void    TrackUiInteractionEvent(const int id,
            const long &lparam,
            const double &dparam,
@@ -385,13 +497,23 @@ void    ProcessUiToggleAlgoTrading();
 void    DeletePreviewObjects();
 void    DeleteByPrefix();
 void    UpdatePreview(const bool do_redraw = true);
+void    UpdatePreviewGeometryOnly(const bool do_redraw = true);
+void    InvalidatePreviewSnapshot();
+void    InvalidatePreviewFinancialState();
+void    MarkPreviewDirty();
+void    MarkPreviewFinancialDirty();
+bool    ShouldRefreshPreviewOnPulse();
+bool    BuildPreviewGeometrySnapshot(PreviewSnapshot &snapshot);
+bool    EnsurePreviewFinancialState(const PreviewSnapshot &snapshot);
+void    ApplyPreviewFinancialStateToSnapshot(PreviewSnapshot &snapshot);
 void    SuppressChartScroll();
 void    RestoreChartScroll();
 void    ResetDragState();
 string  DetectOverlayBarHit(const int mx, const int my);
 void    HandleNativeLineDrag(const string obj_name);
-void    ApplyLineDrag(const int mx, const int my);
+bool    ApplyLineDrag(const int mx, const int my);
 void    HandleMouseMoveDrag(const long mouse_x, const double mouse_y_d, const bool btn_down);
+bool    HandlePanelEdgeGrabDrag(const int mx, const int my, const bool btn_down);
 void    SaveStateForChartChange();
 bool    RestoreStateFromChartChange();
 double  CalcSmartInitDistance();
@@ -405,9 +527,12 @@ void    UpdateOverlayPreviewLabel(const string kind, const string text,
 void    UpdateOpenTradeMarker(const string obj_id, const string text,
            const double price, const bool above_line,
            const color bg_clr, const color border_clr, const color txt_clr);
+bool    RefreshManagedTradeMarkersGeometryOnly();
+void    RequestManagedTradeMarkerCleanup();
 void    UpdateManagedTradeMarkers(const ulong ticket);
 void    EraseManagedTradeMarkers(const ulong ticket);
 void    EraseAllManagedTradeMarkers();
+void    RefreshAllManagedTradeMarkers();
 
 //+------------------------------------------------------------------+
 //|  ██  CLotForgePanel — CAppDialog-based managed panel             |
@@ -475,6 +600,7 @@ public:
    void           RefreshBETrailingButtons(void);
    void           ApplyActionStyle(CButton &btn, const color base_clr, const bool selected);
    bool           IsMouseOverPanel(const int mx, const int my);
+   bool           IsMouseNearPanel(const int mx, const int my);
 
    // ── Protected-access wrapper ────────────────────────────────────
    // CAppDialog::Minimize() is protected; this thin public forwarder lets
@@ -529,6 +655,10 @@ public:
 
 PanelState       g_state;
 TradeParams      g_trade_plan;
+PreviewSnapshot  g_preview_snapshot;
+SymbolRuntimeMetadata g_symbol_metadata;
+PreviewFinancialKey   g_preview_financial_key;
+PreviewFinancialState g_preview_financial_state;
 UiDispatchState  g_ui;
 CTrade           g_trade;
 CLotForgePanel   g_panel;
@@ -543,16 +673,40 @@ string           g_native_preview_line_kind     = "";
 bool             g_scroll_was_enabled = true;
 bool             g_scroll_suppressed  = false;
 bool             g_status_sticky      = false;
+bool             g_preview_snapshot_ready = false;
+bool             g_preview_dirty      = true;
+bool             g_preview_financial_dirty = true;
+double           g_preview_market_entry_key = 0.0;
+int              g_preview_geometry_candle_count = 0;
+datetime         g_preview_geometry_bar_right = 0;
+bool             g_chart_redraw_pending = false;
+HandleTextMeasureCacheEntry g_handle_text_measure_cache[HANDLE_TEXT_MEASURE_CACHE_SIZE];
+HandleTextFitCacheEntry     g_handle_text_fit_cache[HANDLE_TEXT_FIT_CACHE_SIZE];
+int              g_handle_text_measure_cache_next = 0;
+int              g_handle_text_fit_cache_next     = 0;
+bool             g_handle_text_font_ready         = false;
 
 // ── Panel drag performance tracking ─────────────────────────────────
 //  During panel drag, UpdatePreview and heavy processing are suppressed.
 //  This state is now driven by the native CDialog drag hooks.
 bool             g_panel_dragging     = false;
+bool             g_panel_manual_dragging = false;
+bool             g_panel_edge_drag_candidate = false;
+int              g_panel_edge_press_x = 0;
+int              g_panel_edge_press_y = 0;
+int              g_panel_edge_origin_x = 0;
+int              g_panel_edge_origin_y = 0;
 bool             g_ui_interaction_active = false;
 
 // ── Gestão de posição por ticket ──────────────────────────────────
 ManagedTradeState  g_managed_trades[];
 bool               g_algo_trading_enabled = false;   // estado lógico do Algo Trading
+bool               g_managed_marker_cleanup_pending = true;
+ulong              g_perf_preview_geometry_refresh_count = 0;
+ulong              g_perf_preview_financial_refresh_count = 0;
+ulong              g_perf_preview_overlay_only_refresh_count = 0;
+ulong              g_perf_symbol_metadata_refresh_count = 0;
+ulong              g_perf_symbol_metadata_refresh_failure_count = 0;
 
 //+------------------------------------------------------------------+
 //|  ██  IMPLEMENTAÇÕES EXTRAÍDAS                                   |
@@ -570,10 +724,15 @@ bool               g_algo_trading_enabled = false;   // estado lógico do Algo T
 int OnInit()
   {
    g_ui.Reset();
+   g_symbol_metadata.Clear();
+   g_preview_financial_key.Clear();
+   g_preview_financial_state.Clear();
    g_ui_interaction_active = false;
+   g_chart_redraw_pending = false;
    g_trade.SetExpertMagicNumber(InpMagicNumber);
    g_trade.SetDeviationInPoints(InpDeviationPoints);
    g_trade.SetTypeFillingBySymbol(_Symbol);
+   RefreshSymbolRuntimeMetadata(true);
 
    // ── Detectar se é mudança de TF: g_panel e chart objects já existem ─
    bool chart_change = RestoreStateFromChartChange();
@@ -592,7 +751,7 @@ int OnInit()
       UpdatePreview();
       EventSetTimer(1);
       ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
-      ChartRedraw(0);
+      FlushPendingChartRedraw();
       return INIT_SUCCEEDED;
      }
 
@@ -630,7 +789,7 @@ int OnInit()
 
    EventSetTimer(1);
    ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
-   ChartRedraw(0);
+   FlushPendingChartRedraw();
    return INIT_SUCCEEDED;
   }
 
@@ -664,7 +823,8 @@ void OnDeinit(const int reason)
    EraseAllManagedTradeMarkers();
    g_panel.Destroy(reason);
    DeleteByPrefix();
-   ChartRedraw(0);
+   RequestChartRedraw();
+   FlushPendingChartRedraw();
   }
 
 //+------------------------------------------------------------------+
@@ -675,7 +835,7 @@ void OnTick()
   {
    // ── 1. Preview update ─────────────────────────────────────────────
    //  Skip while the user is actively interacting with the panel.
-   if(g_state.action != ACTION_NONE && !ShouldPauseUiHeavyRefresh())
+   if(!ShouldPauseUiHeavyRefresh() && ShouldRefreshPreviewOnPulse())
       UpdatePreview();
 
    // ── 2. Sincronizar estado das posições abertas ───────────────────
@@ -693,13 +853,22 @@ void OnTick()
    // ── 4. Atualizar markers visuais de posição aberta ───────────────
    if(!ShouldPauseUiHeavyRefresh())
       RefreshAllManagedTradeMarkers();
+
+   FlushPendingChartRedraw();
   }
 
 void OnTimer()
   {
+   ulong metadata_revision = CurrentSymbolMetadataRevision();
+   if(RefreshSymbolRuntimeMetadata() &&
+      CurrentSymbolMetadataRevision() != metadata_revision)
+      MarkPreviewDirty();
+
    // Skip while the user is actively interacting with the panel.
-   if(g_state.action != ACTION_NONE && !ShouldPauseUiHeavyRefresh())
+   if(!ShouldPauseUiHeavyRefresh() && ShouldRefreshPreviewOnPulse())
       UpdatePreview();
+
+   FlushPendingChartRedraw();
   }
 
 //+------------------------------------------------------------------+
@@ -726,12 +895,14 @@ void OnChartEvent(const int id,
    if(id == CHARTEVENT_CHART_CHANGE)
      {
       // During panel drag, the chart fires CHART_CHANGE frequently as
-      // the panel overlay moves — skip heavy preview rebuild.
+      // the panel overlay moves — do a geometry-only refresh.
       if(!ShouldPauseUiHeavyRefresh())
         {
-         UpdatePreview();
-         RefreshAllManagedTradeMarkers();
+         UpdatePreviewGeometryOnly();
+         if(!RefreshManagedTradeMarkersGeometryOnly())
+            RefreshAllManagedTradeMarkers();
         }
+      FlushPendingChartRedraw();
       return;
      }
 
@@ -739,6 +910,7 @@ void OnChartEvent(const int id,
    if(id == CHARTEVENT_OBJECT_DRAG)
      {
       HandleNativeLineDrag(sparam);
+      FlushPendingChartRedraw();
       return;
      }
 
@@ -749,8 +921,9 @@ void OnChartEvent(const int id,
          StringFind(sparam, "_line") != -1)
         {
          ObjectSetInteger(0, sparam, OBJPROP_SELECTED, false);
-         ChartRedraw(0);
+         RequestChartRedraw();
         }
+      FlushPendingChartRedraw();
       return;
      }
 
@@ -758,6 +931,7 @@ void OnChartEvent(const int id,
      {
       bool btn_down = ((StringToInteger(sparam) & 1) != 0);
       HandleMouseMoveDrag(lparam, dparam, btn_down);
+      FlushPendingChartRedraw();
       return;
      }
   }

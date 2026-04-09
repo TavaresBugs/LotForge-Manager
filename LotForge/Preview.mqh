@@ -4,8 +4,7 @@
 
 void AdjustLots(const int direction)
   {
-   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   if(step <= 0.0) step = 0.01;
+   double step = SymbolVolumeStepCached();
    g_state.lots = NormalizeVolumeValue(g_state.lots + step * direction);
   }
 
@@ -51,16 +50,15 @@ bool PreviewLinePriceMoved(const string kind, const double expected_price)
    if(live_price <= 0.0)
       return false;
 
-   double tol = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   if(tol <= 0.0)
-      tol = _Point;
+   double tol = SymbolTickSizeCached();
 
    return (MathAbs(live_price - expected_price) > tol * 0.5);
   }
 
 void RefreshNativePreviewLineDragState(const bool btn_down)
   {
-   if(!btn_down || g_state.action == ACTION_NONE || !InpShowPreview)
+   if(!btn_down || g_state.action == ACTION_NONE || !InpShowPreview ||
+      g_panel_dragging || g_panel_manual_dragging)
      {
       g_native_preview_line_dragging = false;
       g_native_preview_line_kind     = "";
@@ -149,6 +147,14 @@ void CalcPreviewTimeRange(datetime &t1, datetime &t2)
    t1 = bar_left;
   }
 
+datetime CurrentPreviewBarRightTime()
+  {
+   datetime bar_right = iTime(_Symbol, PERIOD_CURRENT, 1);
+   if(bar_right == 0) bar_right = iTime(_Symbol, PERIOD_CURRENT, 0);
+   if(bar_right == 0) bar_right = TimeCurrent();
+   return bar_right;
+  }
+
 //+------------------------------------------------------------------+
 //|  IsMouseOverPanel — delegates to g_panel                         |
 //+------------------------------------------------------------------+
@@ -158,17 +164,193 @@ bool IsMouseOverPanel(const int mouse_x, const int mouse_y)
    return g_panel.IsMouseOverPanel(mouse_x, mouse_y);
   }
 
+bool IsMouseNearPanel(const int mouse_x, const int mouse_y)
+  {
+   return g_panel.IsMouseNearPanel(mouse_x, mouse_y);
+  }
+
+void UpdatePanelScrollCapture(const int mouse_x, const int mouse_y)
+  {
+   bool want_capture = (g_panel_dragging ||
+                        g_panel_manual_dragging ||
+                        g_state.edit_in_progress ||
+                        IsMouseNearPanel(mouse_x, mouse_y));
+   if(want_capture)
+     {
+      SuppressChartScroll();
+      return;
+     }
+
+   if(g_drag_phase == DRAG_IDLE && !g_native_preview_line_dragging)
+      RestoreChartScroll();
+  }
+
+bool IsMouseInPanelEdgeGrabBand(const int mouse_x, const int mouse_y)
+  {
+   int x1 = (int)g_panel.Left();
+   int y1 = (int)g_panel.Top();
+   int x2 = (int)g_panel.Right();
+   int y2 = (int)g_panel.Bottom();
+
+   const int inside_band = 4;
+
+   bool left_band = (mouse_x >= x1 - PANEL_PROXIMITY_PX &&
+                     mouse_x <= x1 + inside_band &&
+                     mouse_y >= y1 - PANEL_PROXIMITY_PX &&
+                     mouse_y <= y2 + PANEL_PROXIMITY_PX);
+
+   bool right_band = (mouse_x >= x2 - inside_band &&
+                      mouse_x <= x2 + PANEL_PROXIMITY_PX &&
+                      mouse_y >= y1 - PANEL_PROXIMITY_PX &&
+                      mouse_y <= y2 + PANEL_PROXIMITY_PX);
+
+   bool bottom_band = (mouse_x >= x1 - PANEL_PROXIMITY_PX &&
+                       mouse_x <= x2 + PANEL_PROXIMITY_PX &&
+                       mouse_y >= y2 - inside_band &&
+                       mouse_y <= y2 + PANEL_PROXIMITY_PX);
+
+   return (left_band || right_band || bottom_band);
+  }
+
+bool TryGetPanelCaptionRect(int &x1, int &y1, int &x2, int &y2)
+  {
+   string caption_name = g_panel.Name() + "Caption";
+   if(caption_name == "" || ObjectFind(0, caption_name) < 0)
+      return false;
+
+   int cap_x = (int)ObjectGetInteger(0, caption_name, OBJPROP_XDISTANCE);
+   int cap_y = (int)ObjectGetInteger(0, caption_name, OBJPROP_YDISTANCE);
+   int cap_w = (int)ObjectGetInteger(0, caption_name, OBJPROP_XSIZE);
+   int cap_h = (int)ObjectGetInteger(0, caption_name, OBJPROP_YSIZE);
+   if(cap_w <= 0 || cap_h <= 0)
+      return false;
+
+   x1 = cap_x;
+   y1 = cap_y;
+   x2 = cap_x + cap_w;
+   y2 = cap_y + cap_h;
+   return true;
+  }
+
+bool IsMouseInPanelCaptionGrabBand(const int mouse_x, const int mouse_y)
+  {
+   int x1, y1, x2, y2;
+   if(!TryGetPanelCaptionRect(x1, y1, x2, y2))
+      return false;
+
+   return (mouse_x >= x1 &&
+           mouse_x <= x2 &&
+           mouse_y >= y1 &&
+           mouse_y <= y2);
+  }
+
+void ClampPanelPositionToChart(int &x, int &y)
+  {
+   int chart_w = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   int chart_h = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+   int panel_w = (int)g_panel.Width();
+   int panel_h = (int)g_panel.Height();
+
+   int max_x = MathMax(0, chart_w - panel_w);
+   int max_y = MathMax(0, chart_h - panel_h);
+
+   x = MathMax(0, MathMin(max_x, x));
+   y = MathMax(0, MathMin(max_y, y));
+  }
+
+bool HandlePanelEdgeGrabDrag(const int mx, const int my, const bool btn_down)
+  {
+   if(g_panel_dragging)
+      return false;
+
+   if(!btn_down)
+     {
+      bool was_manual = g_panel_manual_dragging;
+      g_panel_edge_drag_candidate = false;
+
+      if(!was_manual)
+         return false;
+
+      g_panel_manual_dragging = false;
+      SyncUiInteractionState();
+      g_panel.RememberPanelState();
+      if(g_state.action != ACTION_NONE)
+         UpdatePreviewGeometryOnly();
+      if(!RefreshManagedTradeMarkersGeometryOnly())
+         RefreshAllManagedTradeMarkers();
+      return true;
+     }
+
+   if(g_native_preview_line_dragging || g_drag_phase != DRAG_IDLE || g_state.edit_in_progress)
+      return false;
+
+   if(!g_panel_manual_dragging && !g_panel_edge_drag_candidate)
+     {
+      if(!IsMouseInPanelEdgeGrabBand(mx, my) &&
+         !IsMouseInPanelCaptionGrabBand(mx, my))
+         return false;
+
+      g_panel_edge_drag_candidate = true;
+      g_panel_edge_press_x        = mx;
+      g_panel_edge_press_y        = my;
+      g_panel_edge_origin_x       = (int)g_panel.Left();
+      g_panel_edge_origin_y       = (int)g_panel.Top();
+      SuppressChartScroll();
+      return true;
+     }
+
+   if(g_panel_edge_drag_candidate && !g_panel_manual_dragging)
+     {
+      int dx = MathAbs(mx - g_panel_edge_press_x);
+      int dy = MathAbs(my - g_panel_edge_press_y);
+      if(dx + dy < DRAG_THRESHOLD_PX)
+         return true;
+
+      g_panel_manual_dragging = true;
+      SyncUiInteractionState();
+      g_panel.BringPanelToFront();
+     }
+
+   if(!g_panel_manual_dragging)
+      return false;
+
+   int new_x = g_panel_edge_origin_x + (mx - g_panel_edge_press_x);
+   int new_y = g_panel_edge_origin_y + (my - g_panel_edge_press_y);
+   ClampPanelPositionToChart(new_x, new_y);
+   g_panel.Move(new_x, new_y);
+   return true;
+  }
+
 //+------------------------------------------------------------------+
 //|  Typography for all handle labels must stay fixed.               |
 //|  No zoom-based font swap and no adaptive font shrink.            |
 //|  When space is tight, we trim the text, not the font.            |
 //+------------------------------------------------------------------+
 
+void EnsureHandleLabelMeasureFont()
+  {
+   if(g_handle_text_font_ready)
+      return;
+   TextSetFont("Arial Bold", -110);
+   g_handle_text_font_ready = true;
+  }
+
 void MeasureHandleLabelText(const string text, uint &tw, uint &th)
   {
+   for(int i = 0; i < HANDLE_TEXT_MEASURE_CACHE_SIZE; i++)
+     {
+      if(g_handle_text_measure_cache[i].valid &&
+         g_handle_text_measure_cache[i].text == text)
+        {
+         tw = g_handle_text_measure_cache[i].width;
+         th = g_handle_text_measure_cache[i].height;
+         return;
+        }
+     }
+
    tw = 0;
    th = 0;
-   TextSetFont("Arial Bold", -110);
+   EnsureHandleLabelMeasureFont();
    TextGetSize(text, tw, th);
 
    if(tw == 0 || th == 0)
@@ -176,31 +358,72 @@ void MeasureHandleLabelText(const string text, uint &tw, uint &th)
       tw = (uint)(StringLen(text) * OVL_FALLBACK_CHAR_W);
       th = (uint)OVL_FALLBACK_H;
      }
+
+   int slot = g_handle_text_measure_cache_next;
+   g_handle_text_measure_cache[slot].valid  = true;
+   g_handle_text_measure_cache[slot].text   = text;
+   g_handle_text_measure_cache[slot].width  = tw;
+   g_handle_text_measure_cache[slot].height = th;
+   g_handle_text_measure_cache_next++;
+   if(g_handle_text_measure_cache_next >= HANDLE_TEXT_MEASURE_CACHE_SIZE)
+      g_handle_text_measure_cache_next = 0;
   }
 
-string FitHandleLabelText(const string text, const int avail_w)
+void FitHandleLabelText(const string text, const int avail_w,
+                        string &fitted_text, uint &tw, uint &th)
   {
-   uint tw = 0, th = 0;
-   MeasureHandleLabelText(text, tw, th);
-   if((int)tw <= avail_w)
-      return text;
-
-   string suffix = "...";
-   MeasureHandleLabelText(suffix, tw, th);
-   if((int)tw > avail_w)
-      return "";
-
-   int len = StringLen(text);
-   while(len > 0)
+   for(int i = 0; i < HANDLE_TEXT_FIT_CACHE_SIZE; i++)
      {
-      string clipped = StringSubstr(text, 0, len) + suffix;
-      MeasureHandleLabelText(clipped, tw, th);
-      if((int)tw <= avail_w)
-         return clipped;
-      len--;
+      if(g_handle_text_fit_cache[i].valid &&
+         g_handle_text_fit_cache[i].avail_w == avail_w &&
+         g_handle_text_fit_cache[i].text == text)
+        {
+         fitted_text = g_handle_text_fit_cache[i].fitted_text;
+         tw          = g_handle_text_fit_cache[i].width;
+         th          = g_handle_text_fit_cache[i].height;
+         return;
+        }
      }
 
-   return suffix;
+   MeasureHandleLabelText(text, tw, th);
+   if((int)tw <= avail_w)
+      fitted_text = text;
+   else
+     {
+      string suffix = "...";
+      MeasureHandleLabelText(suffix, tw, th);
+      if((int)tw > avail_w)
+         fitted_text = "";
+      else
+        {
+         int len = StringLen(text);
+         fitted_text = suffix;
+         while(len > 0)
+           {
+            string clipped = StringSubstr(text, 0, len) + suffix;
+            MeasureHandleLabelText(clipped, tw, th);
+            if((int)tw <= avail_w)
+              {
+               fitted_text = clipped;
+               break;
+              }
+            len--;
+           }
+        }
+     }
+
+   MeasureHandleLabelText(fitted_text == "" ? " " : fitted_text, tw, th);
+
+   int slot = g_handle_text_fit_cache_next;
+   g_handle_text_fit_cache[slot].valid       = true;
+   g_handle_text_fit_cache[slot].text        = text;
+   g_handle_text_fit_cache[slot].avail_w     = avail_w;
+   g_handle_text_fit_cache[slot].fitted_text = fitted_text;
+   g_handle_text_fit_cache[slot].width       = tw;
+   g_handle_text_fit_cache[slot].height      = th;
+   g_handle_text_fit_cache_next++;
+   if(g_handle_text_fit_cache_next >= HANDLE_TEXT_FIT_CACHE_SIZE)
+      g_handle_text_fit_cache_next = 0;
   }
 
 void ApplyHandleLabelFont(const string obj_name)
@@ -217,19 +440,6 @@ void ExpandOverlayBarToFitText(int &bar_x, int &bar_w, const string text)
    int required_w = (int)tw + 2 * OVL_PAD_X + 2;
    if(required_w > bar_w)
       bar_w = required_w;
-
-   int chart_w = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
-   if(chart_w <= 0)
-      return;
-
-   int max_w = MathMax(20, chart_w - 4);
-   if(bar_w > max_w)
-      bar_w = max_w;
-
-   if(bar_x + bar_w > chart_w - 2)
-      bar_x = chart_w - 2 - bar_w;
-   if(bar_x < 0)
-      bar_x = 0;
   }
 
 //+------------------------------------------------------------------+
@@ -315,8 +525,10 @@ void EraseOverlayLabel(const string kind)
   {
    string bg_n  = PREV_PFX + kind + "_ovbg";
    string txt_n = PREV_PFX + kind + "_ovtxt";
-   if(ObjectFind(0, bg_n)  >= 0) ObjectDelete(0, bg_n);
-   if(ObjectFind(0, txt_n) >= 0) ObjectDelete(0, txt_n);
+   bool bg_exists  = (ObjectFind(0, bg_n)  >= 0);
+   bool txt_exists = (ObjectFind(0, txt_n) >= 0);
+   if(bg_exists)  ObjectDelete(0, bg_n);
+   if(txt_exists) ObjectDelete(0, txt_n);
   }
 
 //+------------------------------------------------------------------+
@@ -367,10 +579,9 @@ void UpdateOverlayPreviewLabel(const string kind,
    bool txt_exists = (ObjectFind(0, txt_n) >= 0);
    ExpandOverlayBarToFitText(bar_x, bar_w, text);
    int avail_w  = MathMax(10, bar_w - 2 * OVL_PAD_X);
-   string fitted_text = FitHandleLabelText(text, avail_w);
-
+   string fitted_text;
    uint tw = 0, th = 0;
-   MeasureHandleLabelText(fitted_text == "" ? " " : fitted_text, tw, th);
+   FitHandleLabelText(text, avail_w, fitted_text, tw, th);
 
    int txt_x = bar_x + OVL_PAD_X;
    int txt_y = box_y + MathMax(1, (OVL_BAR_H - (int)th) / 2 - 1);
@@ -401,153 +612,321 @@ void UpdateOverlayPreviewLabel(const string kind,
       ObjectSetInteger(0, txt_n, OBJPROP_BACK,       false);
       ObjectSetInteger(0, txt_n, OBJPROP_CORNER,     CORNER_LEFT_UPPER);
       ObjectSetInteger(0, txt_n, OBJPROP_ANCHOR,     ANCHOR_LEFT_UPPER);
+      ApplyHandleLabelFont(txt_n);
      }
-   ApplyHandleLabelFont(txt_n);
    ObjectSetInteger(0, txt_n, OBJPROP_XDISTANCE, txt_x);
    ObjectSetInteger(0, txt_n, OBJPROP_YDISTANCE, txt_y);
    ObjectSetString(0,  txt_n, OBJPROP_TEXT,      fitted_text);
    ObjectSetInteger(0, txt_n, OBJPROP_COLOR,     txt_clr);
   }
 
-//+------------------------------------------------------------------+
-//|  ██  4A.1: UpdatePreviewZones — labels built from real plan      |
-//|                                                                  |
-//|  When plan_valid=true, labels use financial data from the plan:  |
-//|    Entry: "Buy (Stop) <price> | Lots <lots>"   — side/subtype    |
-//|    SL:    "SL <price> | -$<risk> | <risk_pct>%"                 |
-//|    TP:    "TP <price> | +$<reward> | <gain_pct>%"               |
-//|                                                                  |
-//|  RR is never shown on overlay bars.                              |
-//|  "Pending" is never shown in the Entry bar text.                 |
-//|  When plan_valid=false, falls back to price-only labels —        |
-//|  geometry is still drawn; only text is degraded.                 |
-//+------------------------------------------------------------------+
-
-void UpdatePreviewZones(const double   entry_price,
-                        const double   sl_price,
-                        const double   tp_price,
-                        const datetime t1,
-                        const datetime t2,
-                        const TradeParams &plan,
-                        const bool     plan_valid)
+void UpdateOverlayPreviewLabelsFromSnapshot(const PreviewSnapshot &snapshot,
+                                            const datetime        t1,
+                                            const datetime        t2)
   {
-   double band = ENTRY_BAND_HALF_PTS * _Point;
+   double entry_price = snapshot.entry_price;
+   double sl_price    = snapshot.sl_price;
+   double tp_price    = snapshot.tp_price;
 
-   bool is_buy = IsBuyAction(g_state.action);
-
-   // ── zone_sep: align TP/SL inner edges with the entry band outer edges.
-   //  Both the TP zone bottom and the SL zone top are set to entry ± band,
-   //  which is the exact same outer boundary used by the entry band rectangle.
-   //  This makes the three zones tile perfectly — no geometric overlap,
-   //  no sub-pixel bleed, no visible gap.
-   double zone_sep = band;   // = ENTRY_BAND_HALF_PTS * _Point
-
-   // ── TP zone ───────────────────────────────────────────────────────
    if(tp_price > 0.0)
      {
-      // Inner edge pulled one tick TOWARD TP so it does not share the
-      // exact entry_price boundary with the SL rectangle below.
+      bool tp_bar_above = snapshot.is_buy;
+      UpdateOverlayPreviewLabel("tp", snapshot.tp_label, tp_price, t1, t2,
+                                tp_bar_above,
+                                CLR_OVL_HANDLE_BG, C'160,160,160', clrBlack);
+     }
+   else
+      EraseOverlayLabel("tp");
+
+   if(sl_price > 0.0)
+     {
+      bool sl_bar_above = !snapshot.is_buy;
+      UpdateOverlayPreviewLabel("sl", snapshot.sl_label, sl_price, t1, t2,
+                                sl_bar_above,
+                                CLR_OVL_HANDLE_BG, C'160,160,160', clrBlack);
+     }
+   else
+      EraseOverlayLabel("sl");
+
+   bool en_bar_above = !snapshot.is_buy;
+   UpdateOverlayPreviewLabel("en", snapshot.en_label, entry_price, t1, t2,
+                             en_bar_above,
+                             CLR_OVL_HANDLE_BG, C'160,160,160', clrBlack);
+  }
+
+void RememberPreviewGeometryState(const datetime bar_right)
+  {
+   g_preview_geometry_candle_count = PreviewCandleCount();
+   g_preview_geometry_bar_right    = bar_right;
+  }
+
+bool CanUseOverlayOnlyPreviewRefresh()
+  {
+   if(!g_preview_snapshot_ready || !g_preview_snapshot.visible)
+      return false;
+
+   if(g_preview_geometry_candle_count <= 0 || g_preview_geometry_bar_right <= 0)
+      return false;
+
+   if(PreviewCandleCount() != g_preview_geometry_candle_count)
+      return false;
+
+   return (CurrentPreviewBarRightTime() == g_preview_geometry_bar_right);
+  }
+
+bool PreviewFinancialKeysMatch(const PreviewFinancialKey &lhs,
+                               const PreviewFinancialKey &rhs)
+  {
+   return (lhs.valid &&
+           rhs.valid &&
+           lhs.action            == rhs.action &&
+           lhs.risk_mode         == rhs.risk_mode &&
+           lhs.risk_percent      == rhs.risk_percent &&
+           lhs.lots              == rhs.lots &&
+           lhs.entry_price       == rhs.entry_price &&
+           lhs.sl_price          == rhs.sl_price &&
+           lhs.tp_price          == rhs.tp_price &&
+           lhs.sl_points         == rhs.sl_points &&
+           lhs.tp_points         == rhs.tp_points &&
+           lhs.account_balance   == rhs.account_balance &&
+           lhs.metadata_revision == rhs.metadata_revision);
+  }
+
+void BuildPreviewFinancialKey(const PreviewSnapshot &snapshot,
+                              PreviewFinancialKey   &key)
+  {
+   key.Clear();
+   if(!snapshot.visible)
+      return;
+
+   key.valid            = true;
+   key.action           = snapshot.action;
+   key.risk_mode        = g_state.risk_mode;
+   key.risk_percent     = NormalizeDouble(g_state.risk_percent, 4);
+   key.lots             = NormalizeDouble(g_state.lots, VolumeDigits());
+   key.entry_price      = NormalizePriceValue(snapshot.entry_price);
+   key.sl_price         = (snapshot.sl_price > 0.0) ? NormalizePriceValue(snapshot.sl_price) : 0.0;
+   key.tp_price         = (snapshot.tp_price > 0.0) ? NormalizePriceValue(snapshot.tp_price) : 0.0;
+   key.sl_points        = MathMax(0.0, MathRound(g_state.sl_points));
+   key.tp_points        = MathMax(0.0, MathRound(g_state.tp_points));
+   key.account_balance  = NormalizeDouble(AccountInfoDouble(ACCOUNT_BALANCE), 2);
+   key.metadata_revision = CurrentSymbolMetadataRevision();
+  }
+
+//+------------------------------------------------------------------+
+//|  ██  4A.1: Preview snapshot + geometry renderer                  |
+//+------------------------------------------------------------------+
+
+bool BuildPreviewGeometrySnapshot(PreviewSnapshot &snapshot)
+  {
+   snapshot.Clear();
+
+   if(g_state.action == ACTION_NONE || !InpShowPreview)
+      return false;
+
+   snapshot.action      = g_state.action;
+   snapshot.is_buy      = IsBuyAction(g_state.action);
+   snapshot.entry_price = EffectiveStateEntryPrice(g_state.action);
+   if(snapshot.entry_price <= 0.0)
+      return false;
+
+   if(IsMarketAction(g_state.action))
+      SyncMarketPointsFromAbsoluteTargets(snapshot.entry_price);
+
+   snapshot.sl_price = EffectiveStateSLPrice(g_state.action, snapshot.entry_price);
+   snapshot.tp_price = EffectiveStateTPPrice(g_state.action, snapshot.entry_price);
+
+   snapshot.effective_label    = EffectiveActionLabel(g_state.action, snapshot.entry_price);
+   snapshot.short_label        = ShortPreviewLabel(g_state.action, snapshot.entry_price);
+   snapshot.entry_line_tooltip = snapshot.effective_label + " @ " + FormatPrice(snapshot.entry_price);
+   snapshot.sl_line_tooltip    = (snapshot.sl_price > 0.0)
+                                 ? "SL @ " + FormatPrice(snapshot.sl_price)
+                                 : "";
+   snapshot.tp_line_tooltip    = (snapshot.tp_price > 0.0)
+                                 ? "TP @ " + FormatPrice(snapshot.tp_price)
+                                 : "";
+
+   snapshot.visible = true;
+   return true;
+  }
+
+bool EnsurePreviewFinancialState(const PreviewSnapshot &snapshot)
+  {
+   PreviewFinancialKey next_key;
+   BuildPreviewFinancialKey(snapshot, next_key);
+   if(!next_key.valid)
+     {
+      InvalidatePreviewFinancialState();
+      return false;
+     }
+
+   if(!g_preview_financial_dirty &&
+      g_preview_financial_state.ready &&
+      PreviewFinancialKeysMatch(g_preview_financial_key, next_key))
+      return true;
+
+   PreviewFinancialState next_state;
+   next_state.Clear();
+   next_state.plan_built = BuildTradePlan(next_state.plan, next_state.build_reason);
+   next_state.plan_valid = next_state.plan_built &&
+                           ValidateTradeRequest(next_state.plan, next_state.validation_message);
+   if(!next_state.plan_built)
+      next_state.validation_message = next_state.build_reason;
+   next_state.ready = true;
+
+   g_preview_financial_key   = next_key;
+   g_preview_financial_state = next_state;
+   g_preview_financial_dirty = false;
+   g_perf_preview_financial_refresh_count++;
+   TracePerfEvent("preview financial state refreshed");
+   return true;
+  }
+
+void ApplyPreviewFinancialStateToSnapshot(PreviewSnapshot &snapshot)
+  {
+   snapshot.plan_valid = (g_preview_financial_state.ready &&
+                          g_preview_financial_state.plan_valid);
+   snapshot.plan_lots    = snapshot.plan_valid ? g_preview_financial_state.plan.lots : g_state.lots;
+   snapshot.risk_money   = snapshot.plan_valid ? g_preview_financial_state.plan.risk_money : 0.0;
+   snapshot.reward_money = snapshot.plan_valid ? g_preview_financial_state.plan.reward_money : 0.0;
+   snapshot.risk_pct     = snapshot.plan_valid ? g_preview_financial_state.plan.risk_pct : 0.0;
+   snapshot.reward_pct   = snapshot.plan_valid ? g_preview_financial_state.plan.reward_pct : 0.0;
+
+   snapshot.en_label = snapshot.short_label + " " + FormatPrice(snapshot.entry_price) +
+                       " | Lots " + FormatLots(snapshot.plan_lots);
+
+   if(snapshot.sl_price > 0.0)
+     {
+      if(snapshot.plan_valid && snapshot.risk_money > 0.0)
+        {
+         snapshot.sl_label = StringFormat("SL %s | -$%.2f",
+                                          FormatPrice(snapshot.sl_price),
+                                          snapshot.risk_money);
+         if(snapshot.risk_pct > 0.0)
+            snapshot.sl_label += StringFormat(" | %.2f%%", snapshot.risk_pct);
+        }
+      else
+         snapshot.sl_label = "SL " + FormatPrice(snapshot.sl_price);
+     }
+
+   if(snapshot.tp_price > 0.0)
+     {
+      if(snapshot.plan_valid && snapshot.reward_money > 0.0)
+        {
+         snapshot.tp_label = StringFormat("TP %s | +$%.2f",
+                                          FormatPrice(snapshot.tp_price),
+                                          snapshot.reward_money);
+         if(snapshot.reward_pct > 0.0)
+            snapshot.tp_label += StringFormat(" | %.2f%%", snapshot.reward_pct);
+        }
+      else
+         snapshot.tp_label = "TP " + FormatPrice(snapshot.tp_price);
+     }
+  }
+
+bool BuildPreviewSnapshot(PreviewSnapshot &snapshot)
+  {
+   if(!BuildPreviewGeometrySnapshot(snapshot))
+      return false;
+
+   EnsurePreviewFinancialState(snapshot);
+   ApplyPreviewFinancialStateToSnapshot(snapshot);
+   return true;
+  }
+
+void UpdatePreviewZonesFromSnapshot(const PreviewSnapshot &snapshot,
+                                    const datetime        t1,
+                                    const datetime        t2)
+  {
+   double entry_price = snapshot.entry_price;
+   double sl_price    = snapshot.sl_price;
+   double tp_price    = snapshot.tp_price;
+   double band        = ENTRY_BAND_HALF_PTS * _Point;
+
+   // ── zone_sep: align TP/SL inner edges with the entry band outer edges.
+   double zone_sep = band;
+
+   if(tp_price > 0.0)
+     {
       double tp_hi, tp_lo;
       if(tp_price > entry_price)
         { tp_hi = tp_price; tp_lo = entry_price + zone_sep; }
       else
         { tp_hi = entry_price - zone_sep; tp_lo = tp_price; }
 
-      string tp_lbl;
-      if(plan_valid && plan.reward_money > 0.0)
-        {
-         tp_lbl = StringFormat("TP %s | +$%.2f",
-                    FormatPrice(tp_price),
-                    plan.reward_money);
-         if(plan.reward_pct > 0.0)
-            tp_lbl += StringFormat(" | %.2f%%", plan.reward_pct);
-        }
-      else
-        {
-         tp_lbl = "TP " + FormatPrice(tp_price);
-        }
-
       DrawPreviewZone("tp", t1, t2, tp_hi, tp_lo,
                       CLR_PREV_TP_FILL, CLR_PREV_TP_BORDER,
-                      CLR_PREV_TP_TEXT, tp_lbl, tp_price);
-      // ── TP overlay bar: must sit OUTWARD from entry (away from the zone)
-      //  BUY:  TP is above entry → outward = further UP  → bar ABOVE TP line → above_line=true
-      //  SELL: TP is below entry → outward = further DOWN → bar BELOW TP line → above_line=false
-      bool tp_bar_above = is_buy;   // true for BUY (bar above line), false for SELL (bar below line)
-      UpdateOverlayPreviewLabel("tp", tp_lbl, tp_price, t1, t2,
-                                tp_bar_above,
-                                CLR_OVL_HANDLE_BG, C'160,160,160', clrBlack);
+                      CLR_PREV_TP_TEXT, snapshot.tp_label, tp_price);
      }
    else
      {
       ErasePreviewZone("tp");
-      EraseOverlayLabel("tp");
      }
 
-   // ── SL zone ───────────────────────────────────────────────────────
    if(sl_price > 0.0)
      {
-      // Inner edge pulled one tick TOWARD SL — symmetric with TP fix above.
       double sl_hi, sl_lo;
       if(sl_price < entry_price)
         { sl_hi = entry_price - zone_sep; sl_lo = sl_price; }
       else
         { sl_hi = sl_price; sl_lo = entry_price + zone_sep; }
 
-      string sl_lbl;
-      if(plan_valid && plan.risk_money > 0.0)
-        {
-         sl_lbl = StringFormat("SL %s | -$%.2f",
-                    FormatPrice(sl_price),
-                    plan.risk_money);
-         if(plan.risk_pct > 0.0)
-            sl_lbl += StringFormat(" | %.2f%%", plan.risk_pct);
-        }
-      else
-        {
-         sl_lbl = "SL " + FormatPrice(sl_price);
-        }
-
       DrawPreviewZone("sl", t1, t2, sl_hi, sl_lo,
                       CLR_PREV_SL_FILL, CLR_PREV_SL_BORDER,
-                      CLR_PREV_SL_TEXT, sl_lbl, sl_price);
-      // ── SL overlay bar: must sit OUTWARD from entry (away from the zone)
-      //  BUY:  SL is below entry → outward = further DOWN → bar BELOW SL line → above_line=false
-      //  SELL: SL is above entry → outward = further UP   → bar ABOVE SL line → above_line=true
-      bool sl_bar_above = !is_buy;  // false for BUY (bar below line), true for SELL (bar above line)
-      UpdateOverlayPreviewLabel("sl", sl_lbl, sl_price, t1, t2,
-                                sl_bar_above,
-                                CLR_OVL_HANDLE_BG, C'160,160,160', clrBlack);
+                      CLR_PREV_SL_TEXT, snapshot.sl_label, sl_price);
      }
    else
      {
       ErasePreviewZone("sl");
-      EraseOverlayLabel("sl");
      }
 
-   // ── Entry band ────────────────────────────────────────────────────
-   {
-    string effective_lbl = ShortPreviewLabel(g_state.action, entry_price);
-    // Use plan lots when valid (risk-mode may have computed a different
-    // lot count than g_state.lots); fall back to g_state.lots otherwise.
-    string lots_str = plan_valid
-                      ? FormatLots(plan.lots)
-                      : FormatLots(g_state.lots);
-    string en_lbl = effective_lbl + " " + FormatPrice(entry_price) +
-                    " | Lots " + lots_str;
+   DrawPreviewZone("en", t1, t2,
+                   entry_price + band, entry_price - band,
+                   CLR_PREV_EN_FILL, CLR_PREV_EN_BORDER,
+                   CLR_PREV_EN_TEXT, snapshot.en_label, entry_price);
+   UpdateOverlayPreviewLabelsFromSnapshot(snapshot, t1, t2);
+  }
 
-    DrawPreviewZone("en", t1, t2,
-                    entry_price + band, entry_price - band,
-                    CLR_PREV_EN_FILL, CLR_PREV_EN_BORDER,
-                    CLR_PREV_EN_TEXT, en_lbl, entry_price);
-    // ── Entry overlay bar: sits on the TRAILING side relative to direction
-    //  BUY:  price moves up → entry bar sits BELOW the entry line → above_line=false
-    //  SELL: price moves down → entry bar sits ABOVE the entry line → above_line=true
-    bool en_bar_above = !is_buy;   // false for BUY (below entry line), true for SELL (above entry line)
-    UpdateOverlayPreviewLabel("en", en_lbl, entry_price, t1, t2,
-                              en_bar_above,
-                              CLR_OVL_HANDLE_BG, C'160,160,160', clrBlack);
-   }
+void RenderPreviewFromSnapshot(const PreviewSnapshot &snapshot,
+                               const bool             do_redraw)
+  {
+   if(!snapshot.visible)
+     {
+      DeletePreviewObjects();
+      return;
+     }
+
+   datetime t1, t2;
+   CalcPreviewTimeRange(t1, t2);
+   RememberPreviewGeometryState(t2);
+   g_perf_preview_geometry_refresh_count++;
+
+   EnsurePreviewLine("entry", snapshot.entry_price,
+                     CLR_ENTRY_LINE, STYLE_DOT, 1,
+                     snapshot.entry_line_tooltip);
+   if(snapshot.sl_price > 0.0)
+      EnsurePreviewLine("sl", snapshot.sl_price, CLR_SL_LINE, STYLE_DOT, 1,
+                        snapshot.sl_line_tooltip);
+   else
+     {
+      string sl_ln = PREV_PFX + "sl_line";
+      if(ObjectFind(0, sl_ln) >= 0) ObjectDelete(0, sl_ln);
+      EraseOverlayLabel("sl");
+     }
+   if(snapshot.tp_price > 0.0)
+      EnsurePreviewLine("tp", snapshot.tp_price, CLR_TP_LINE, STYLE_DOT, 1,
+                        snapshot.tp_line_tooltip);
+   else
+     {
+      string tp_ln = PREV_PFX + "tp_line";
+      if(ObjectFind(0, tp_ln) >= 0) ObjectDelete(0, tp_ln);
+      EraseOverlayLabel("tp");
+     }
+
+   UpdatePreviewZonesFromSnapshot(snapshot, t1, t2);
+
+   if(do_redraw)
+      RequestChartRedraw();
   }
 
 void ForcePreviewLinesFlat()
@@ -577,7 +956,7 @@ void ForcePreviewLinesFlat()
 //|  removidos. O texto agora está DENTRO das zonas (centrado).       |
 //+------------------------------------------------------------------+
 
-void UpdatePreview(const bool do_redraw)
+void UpdatePreviewGeometryOnly(const bool do_redraw)
   {
    if(g_state.action == ACTION_NONE || !InpShowPreview)
      {
@@ -585,72 +964,46 @@ void UpdatePreview(const bool do_redraw)
       return;
      }
 
+   if(ShouldRefreshPreviewOnPulse())
+     {
+      UpdatePreview(do_redraw);
+      return;
+     }
 
+   if(CanUseOverlayOnlyPreviewRefresh())
+     {
+      datetime t1, t2;
+      CalcPreviewTimeRange(t1, t2);
+      UpdateOverlayPreviewLabelsFromSnapshot(g_preview_snapshot, t1, t2);
+      g_perf_preview_overlay_only_refresh_count++;
+      if(do_redraw)
+         RequestChartRedraw();
+      return;
+     }
 
-   bool is_buy    = IsBuyAction(g_state.action);
-   double entry_price = EffectiveStateEntryPrice(g_state.action);
-   if(entry_price <= 0.0)
+   RenderPreviewFromSnapshot(g_preview_snapshot, do_redraw);
+  }
+
+void UpdatePreview(const bool do_redraw)
+  {
+   PreviewSnapshot snapshot;
+   if(!BuildPreviewSnapshot(snapshot))
      {
       DeletePreviewObjects();
       return;
      }
-   double sl_price = EffectiveStateSLPrice(g_state.action, entry_price);
-   double tp_price = EffectiveStateTPPrice(g_state.action, entry_price);
 
-   if(IsMarketAction(g_state.action))
-      SyncMarketPointsFromAbsoluteTargets(entry_price);
+   g_preview_snapshot       = snapshot;
+   g_preview_snapshot_ready = true;
+   g_preview_dirty          = false;
+   g_preview_market_entry_key = IsMarketAction(snapshot.action)
+                                ? NormalizePriceValue(snapshot.entry_price)
+                                : 0.0;
 
-   // ── Attempt real plan for financial labels ────────────────────────
-   // Two-stage check: build must succeed AND validation must pass.
-   // Geometry is drawn from raw g_state prices regardless (below).
-   // Financial labels (risk $, reward $, %, RR) only appear when the
-   // plan is fully valid — i.e. would not be rejected at Send time.
-   TradeParams plan;
-   string      build_reason;
-   string      validate_msg;
-   bool        plan_built = BuildTradePlan(plan, build_reason);
-   bool        plan_valid = plan_built && ValidateTradeRequest(plan, validate_msg);
+   RenderPreviewFromSnapshot(snapshot, do_redraw);
 
-   // ── Shared time range ─────────────────────────────────────────────
-   datetime t1, t2;
-   CalcPreviewTimeRange(t1, t2);
-
-   // ── Horizontal lines (drag handles) ──────────────────────────────
-   string effective_lbl = EffectiveActionLabel(g_state.action, entry_price);
-   EnsurePreviewLine("entry", entry_price,
-                     CLR_ENTRY_LINE, STYLE_DOT, 1,
-                     effective_lbl + " @ " + FormatPrice(entry_price));
-   if(sl_price > 0.0)
-      EnsurePreviewLine("sl", sl_price, CLR_SL_LINE, STYLE_DOT, 1,
-                        "SL @ " + FormatPrice(sl_price));
-   else
-     {
-      string sl_ln = PREV_PFX + "sl_line";
-      if(ObjectFind(0, sl_ln) >= 0) ObjectDelete(0, sl_ln);
-      EraseOverlayLabel("sl");
-     }
-   if(tp_price > 0.0)
-      EnsurePreviewLine("tp", tp_price, CLR_TP_LINE, STYLE_DOT, 1,
-                        "TP @ " + FormatPrice(tp_price));
-   else
-     {
-      string tp_ln = PREV_PFX + "tp_line";
-      if(ObjectFind(0, tp_ln) >= 0) ObjectDelete(0, tp_ln);
-      EraseOverlayLabel("tp");
-     }
-
-   // ── Zone rectangles + financial text ─────────────────────────────
-   UpdatePreviewZones(entry_price, sl_price, tp_price, t1, t2, plan, plan_valid);
-
-   // ── Phase 4B: preview guidance must NOT overwrite sticky status ──
-   if(!g_status_sticky)
-     {
-      if(IsPendingAction(g_state.action))
-         SetStatus("Ação: " + effective_lbl + ". Configure e clique Send.");
-     }
-
-   if(do_redraw)
-      ChartRedraw(0);
+   if(!g_status_sticky && IsPendingAction(g_state.action))
+      SetStatus("Ação: " + snapshot.effective_label + ". Configure e clique Send.");
   }
 
 //+------------------------------------------------------------------+
@@ -667,7 +1020,7 @@ void UpdatePreview(const bool do_redraw)
 
 string DetectOverlayBarHit(const int mx, const int my)
   {
-   if(IsMouseOverPanel(mx, my)) return "";
+   if(IsMouseNearPanel(mx, my)) return "";
 
    double entry_p = EffectiveStateEntryPrice(g_state.action);
    double sl_p    = EffectiveStateSLPrice(g_state.action, entry_p);
@@ -686,7 +1039,8 @@ string DetectOverlayBarHit(const int mx, const int my)
           _by=(int)ObjectGetInteger(0,_n,OBJPROP_YDISTANCE);
           _bw=(int)ObjectGetInteger(0,_n,OBJPROP_XSIZE);
           _bh=(int)ObjectGetInteger(0,_n,OBJPROP_YSIZE);
-          if(mx>=_bx && mx<=_bx+_bw && my>=_by && my<=_by+_bh) return "entry";
+          if(mx>=_bx-OVL_HIT_PAD_PX && mx<=_bx+_bw+OVL_HIT_PAD_PX &&
+             my>=_by-OVL_HIT_PAD_PX && my<=_by+_bh+OVL_HIT_PAD_PX) return "entry";
          }
       }
     // sl bar
@@ -699,7 +1053,8 @@ string DetectOverlayBarHit(const int mx, const int my)
           _by=(int)ObjectGetInteger(0,_n,OBJPROP_YDISTANCE);
           _bw=(int)ObjectGetInteger(0,_n,OBJPROP_XSIZE);
           _bh=(int)ObjectGetInteger(0,_n,OBJPROP_YSIZE);
-          if(mx>=_bx && mx<=_bx+_bw && my>=_by && my<=_by+_bh) return "sl";
+          if(mx>=_bx-OVL_HIT_PAD_PX && mx<=_bx+_bw+OVL_HIT_PAD_PX &&
+             my>=_by-OVL_HIT_PAD_PX && my<=_by+_bh+OVL_HIT_PAD_PX) return "sl";
          }
       }
     // tp bar
@@ -712,7 +1067,8 @@ string DetectOverlayBarHit(const int mx, const int my)
           _by=(int)ObjectGetInteger(0,_n,OBJPROP_YDISTANCE);
           _bw=(int)ObjectGetInteger(0,_n,OBJPROP_XSIZE);
           _bh=(int)ObjectGetInteger(0,_n,OBJPROP_YSIZE);
-          if(mx>=_bx && mx<=_bx+_bw && my>=_by && my<=_by+_bh) return "tp";
+          if(mx>=_bx-OVL_HIT_PAD_PX && mx<=_bx+_bw+OVL_HIT_PAD_PX &&
+             my>=_by-OVL_HIT_PAD_PX && my<=_by+_bh+OVL_HIT_PAD_PX) return "tp";
          }
       }
    }
@@ -720,17 +1076,59 @@ string DetectOverlayBarHit(const int mx, const int my)
    return "";
   }
 
-void ApplyLineDrag(const int mx, const int my)
+bool ResolveDragPriceFromMouse(const int mx, const int my, double &out_price)
+  {
+   int      subwin;
+   datetime t_dummy;
+   double   price = 0.0;
+
+   if(ChartXYToTimePrice(0, mx, my, subwin, t_dummy, price) && price > 0.0)
+     {
+      out_price = price;
+      return true;
+     }
+
+   int chart_w = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   int chart_h = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+   if(chart_w <= 1 || chart_h <= 1)
+      return false;
+
+   int clamped_x = MathMax(0, MathMin(chart_w - 2, mx));
+   int clamped_y = MathMax(0, MathMin(chart_h - 2, my));
+
+   if(ChartXYToTimePrice(0, clamped_x, clamped_y, subwin, t_dummy, price) && price > 0.0)
+     {
+      out_price = price;
+      return true;
+     }
+
+   for(int dx = 1; dx <= LINE_HIT_TOL_PX; dx++)
+     {
+      int probe_x = MathMax(0, clamped_x - dx);
+      if(ChartXYToTimePrice(0, probe_x, clamped_y, subwin, t_dummy, price) && price > 0.0)
+        {
+         out_price = price;
+         return true;
+        }
+     }
+
+   return false;
+  }
+
+bool ApplyLineDrag(const int mx, const int my)
   {
    bool is_buy    = IsBuyAction(g_state.action);
    bool is_market = IsMarketAction(g_state.action);
-   int      subwin;
-   datetime t_dummy;
+   double old_entry_price     = g_state.entry_price;
+   double old_sl_points       = g_state.sl_points;
+   double old_tp_points       = g_state.tp_points;
+   double old_market_sl_price = g_state.market_sl_price;
+   double old_market_tp_price = g_state.market_tp_price;
    double   new_price;
-   if(!ChartXYToTimePrice(0, mx, my, subwin, t_dummy, new_price)) return;
-   if(new_price <= 0.0) return;
+   if(!ResolveDragPriceFromMouse(mx, my, new_price)) return false;
+   if(new_price <= 0.0) return false;
 
-   double tick_sz = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tick_sz = SymbolTickSizeCached();
    new_price = (tick_sz > 0.0)
                ? NormalizePriceValue(MathRound(new_price / tick_sz) * tick_sz)
                : NormalizePriceValue(new_price);
@@ -789,6 +1187,11 @@ void ApplyLineDrag(const int mx, const int my)
             g_state.market_tp_price = new_price;
         }
      }
+   return (g_state.entry_price      != old_entry_price     ||
+           g_state.sl_points        != old_sl_points       ||
+           g_state.tp_points        != old_tp_points       ||
+           g_state.market_sl_price  != old_market_sl_price ||
+           g_state.market_tp_price  != old_market_tp_price);
   }
 
 //+------------------------------------------------------------------+
@@ -810,7 +1213,7 @@ void HandleNativeLineDrag(const string obj_name)
    double new_price = ObjectGetDouble(0, obj_name, OBJPROP_PRICE);
    if(new_price <= 0.0) return;
 
-   double tick_sz = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tick_sz = SymbolTickSizeCached();
    if(tick_sz > 0.0)
       new_price = NormalizePriceValue(MathRound(new_price / tick_sz) * tick_sz);
    else
@@ -911,28 +1314,39 @@ void HandleMouseMoveDrag(const long   mouse_x_l,
    int my = (int)mouse_y_d;
 
    RefreshNativePreviewLineDragState(btn_down);
+   UpdatePanelScrollCapture(mx, my);
+
+   if(HandlePanelEdgeGrabDrag(mx, my, btn_down))
+     {
+      UpdatePanelScrollCapture(mx, my);
+      return;
+     }
+
+   if(g_panel_dragging)
+     {
+      UpdatePanelScrollCapture(mx, my);
+      return;
+     }
 
    // ── Release: clean up any active overlay drag ────────────────────
    if(!btn_down)
      {
       if(g_drag_phase == DRAG_ACTIVE_LINE)
         {
-         RestoreChartScroll();
          g_drag_phase     = DRAG_IDLE;
          g_drag_line_kind = "";
-         if(g_state.action != ACTION_NONE) UpdatePreview();
         }
       else if(g_drag_phase == DRAG_CANDIDATE)
         {
-         RestoreChartScroll();   // was suppressed at hit detection
          g_drag_phase     = DRAG_IDLE;
          g_drag_line_kind = "";
         }
+      UpdatePanelScrollCapture(mx, my);
       return;
      }
 
    // ── CRITICAL GUARD: if mouse is over the panel, never start a drag ──
-   if(g_drag_phase == DRAG_IDLE && IsMouseOverPanel(mx, my))
+   if(g_drag_phase == DRAG_IDLE && IsMouseNearPanel(mx, my))
       return;
 
    if(g_native_preview_line_dragging)
@@ -965,9 +1379,11 @@ void HandleMouseMoveDrag(const long   mouse_x_l,
 
    if(g_drag_phase == DRAG_ACTIVE_LINE)
      {
-      ApplyLineDrag(mx, my);
-      g_panel.RefreshValues();
-      UpdatePreview();
+      if(ApplyLineDrag(mx, my))
+        {
+         g_panel.RefreshValues();
+         UpdatePreview();
+        }
       return;
      }
   }

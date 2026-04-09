@@ -11,6 +11,71 @@ void TradeParams::Clear()
 
 bool TradeParams::IsValid() const { return (entry_price > 0.0 && lots > 0.0); }
 
+void PreviewSnapshot::Clear()
+  {
+   visible            = false;
+   action             = ACTION_NONE;
+   is_buy             = false;
+   entry_price        = 0.0;
+   sl_price           = 0.0;
+   tp_price           = 0.0;
+   plan_valid         = false;
+   plan_lots          = 0.0;
+   risk_money         = 0.0;
+   reward_money       = 0.0;
+   risk_pct           = 0.0;
+   reward_pct         = 0.0;
+   effective_label    = "";
+   short_label        = "";
+   entry_line_tooltip = "";
+   sl_line_tooltip    = "";
+   tp_line_tooltip    = "";
+   en_label           = "";
+   sl_label           = "";
+   tp_label           = "";
+  }
+
+void SymbolRuntimeMetadata::Clear()
+  {
+   valid           = false;
+   symbol          = "";
+   digits          = 5;
+   volume_min      = 0.01;
+   volume_max      = 100.0;
+   volume_step     = 0.01;
+   tick_size       = 0.0;
+   stops_level     = 0;
+   freeze_level    = 0;
+   revision        = 0;
+   last_refresh_ms = 0;
+  }
+
+void PreviewFinancialKey::Clear()
+  {
+   valid            = false;
+   action           = ACTION_NONE;
+   risk_mode        = RISK_MODE_LOTS;
+   risk_percent     = 0.0;
+   lots             = 0.0;
+   entry_price      = 0.0;
+   sl_price         = 0.0;
+   tp_price         = 0.0;
+   sl_points        = 0.0;
+   tp_points        = 0.0;
+   account_balance  = 0.0;
+   metadata_revision = 0;
+  }
+
+void PreviewFinancialState::Clear()
+  {
+   ready              = false;
+   plan_built         = false;
+   plan_valid         = false;
+   plan.Clear();
+   build_reason       = "";
+   validation_message = "";
+  }
+
 void PanelState::Init()
   {
    panel_x     = InpPanelX;
@@ -62,6 +127,32 @@ int FindManagedIndex(const ulong ticket)
       if(g_managed_trades[i].ticket == ticket)
          return i;
    return -1;
+  }
+
+void RequestManagedTradeMarkerCleanup()
+  {
+   g_managed_marker_cleanup_pending = true;
+  }
+
+int FindManagedTradeMarkerObjects(const string obj_id,
+                                  string      &bg_n,
+                                  string      &txt_n)
+  {
+   bg_n = MNGD_PFX + obj_id + "_bg";
+   txt_n = MNGD_PFX + obj_id + "_tx";
+
+   int found_mask = 0;
+   if(ObjectFind(0, bg_n) >= 0)  found_mask |= 1;
+   if(ObjectFind(0, txt_n) >= 0) found_mask |= 2;
+   return found_mask;
+  }
+
+int FindManagedTradeMarkerKindObjects(const string tk_str,
+                                      const string kind,
+                                      string      &bg_n,
+                                      string      &txt_n)
+  {
+   return FindManagedTradeMarkerObjects(tk_str + "_" + kind, bg_n, txt_n);
   }
 
 //+------------------------------------------------------------------+
@@ -130,6 +221,7 @@ void SyncManagedTradeState()
         {
          // Apagar markers visuais antes de remover entrada
          EraseManagedTradeMarkers(g_managed_trades[i].ticket);
+         RequestManagedTradeMarkerCleanup();
          // Remover entrada: shift para baixo
          for(int j = i; j < n - 1; j++)
             g_managed_trades[j] = g_managed_trades[j + 1];
@@ -231,7 +323,7 @@ bool TryManualBreakEven(const ulong ticket)
      }
 
    // ── Verificar stop level mínimo do broker ────────────────────────
-   int stop_lvl = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   int stop_lvl = SymbolStopsLevelCached();
    MqlTick tick;
    SymbolInfoTick(_Symbol, tick);
    double current_price = (type == POSITION_TYPE_BUY) ? tick.bid : tick.ask;
@@ -318,9 +410,8 @@ bool TryPartialClose(const ulong ticket)
    if(pct < InpAlgoPartialTrigger) return false;
 
    double lote      = PositionGetDouble(POSITION_VOLUME);
-   double lote_min  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double lote_step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   if(lote_step <= 0.0) lote_step = 0.01;
+   double lote_min  = SymbolVolumeMinCached();
+   double lote_step = SymbolVolumeStepCached();
 
    double lote_fechar = MathFloor((lote * InpAlgoPartialClosePct / 100.0) / lote_step) * lote_step;
    if(lote_fechar < lote_min)  lote_fechar = lote_min;
@@ -409,7 +500,7 @@ bool TryTrailingStop(const ulong ticket)
    if(!should_move) return false;
 
    // Verificar stop level
-   int stop_lvl = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   int stop_lvl = SymbolStopsLevelCached();
    MqlTick tick;
    SymbolInfoTick(_Symbol, tick);
    double cur_p = (type == POSITION_TYPE_BUY) ? tick.bid : tick.ask;
@@ -487,6 +578,108 @@ void RunAutomatedTradeManagement()
 //|  · No right-edge clamping — natural "eaten by scale" clipping     |
 //+------------------------------------------------------------------+
 
+bool BuildOpenTradeMarkerLayout(const string text,
+                                const double price,
+                                const bool   above_line,
+                                int          &bar_x,
+                                int          &box_y,
+                                int          &bar_w,
+                                int          &box_h,
+                                int          &txt_x_pos,
+                                int          &txt_y_pos,
+                                string       &fitted_text)
+  {
+   datetime t_bar0 = iTime(_Symbol, PERIOD_CURRENT, 0);
+   datetime t_bar1 = iTime(_Symbol, PERIOD_CURRENT, 1);
+   if(t_bar0 == 0 || t_bar1 == 0)
+      return false;
+
+   int px0, py0, px1, py1_scr;
+   if(!ChartTimePriceToXY(0, 0, t_bar0, price, px0, py0) ||
+      !ChartTimePriceToXY(0, 0, t_bar1, price, px1, py1_scr))
+      return false;
+
+   int candle_px = MathAbs(px0 - px1);
+   if(candle_px < 1) candle_px = 8;
+
+   int span_candles = PreviewCandleCount() + 1;
+   bar_x = px1 - 2;
+   bar_w = candle_px * span_candles + 2;
+   if(bar_w < 1)
+      return false;
+
+   int py = py0;
+   int chart_h = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+   if(py < -OVL_BAR_H || py > chart_h + OVL_BAR_H)
+      return false;
+
+   box_h = OVL_BAR_H;
+   box_y = above_line ? (py - OVL_LINE_OFFSET - box_h)
+                      : (py + OVL_LINE_OFFSET);
+
+   ExpandOverlayBarToFitText(bar_x, bar_w, text);
+   int avail_w = MathMax(10, bar_w - 2 * OVL_PAD_X);
+   uint tw = 0, th = 0;
+   FitHandleLabelText(text, avail_w, fitted_text, tw, th);
+
+   txt_x_pos = bar_x + OVL_PAD_X;
+   txt_y_pos = box_y + MathMax(1, (OVL_BAR_H - (int)th) / 2 - 1);
+   return true;
+  }
+
+void EraseManagedTradeMarkerKind(const string tk_str, const string kind)
+  {
+   string bg_n, txt_n;
+   int found_mask = FindManagedTradeMarkerKindObjects(tk_str, kind, bg_n, txt_n);
+   if((found_mask & 1) != 0) ObjectDelete(0, bg_n);
+   if((found_mask & 2) != 0) ObjectDelete(0, txt_n);
+  }
+
+bool ManagedTradeMarkerKindExists(const string tk_str, const string kind)
+  {
+   string bg_n, txt_n;
+   return (FindManagedTradeMarkerKindObjects(tk_str, kind, bg_n, txt_n) != 0);
+  }
+
+bool UpdateOpenTradeMarkerGeometryOnly(const string obj_id,
+                                       const double price,
+                                       const bool   above_line)
+  {
+   string bg_n, txt_n;
+   int found_mask = FindManagedTradeMarkerObjects(obj_id, bg_n, txt_n);
+   if(found_mask != 3)
+      return false;
+
+   string full_text = ObjectGetString(0, txt_n, OBJPROP_TOOLTIP);
+   if(full_text == "")
+      full_text = ObjectGetString(0, txt_n, OBJPROP_TEXT);
+   if(full_text == "")
+      return false;
+
+   int bar_x, box_y, bar_w, box_h, txt_x_pos, txt_y_pos;
+   string fitted_text;
+   if(!BuildOpenTradeMarkerLayout(full_text, price, above_line,
+                                  bar_x, box_y, bar_w, box_h,
+                                  txt_x_pos, txt_y_pos, fitted_text))
+     {
+      ObjectDelete(0, bg_n);
+      ObjectDelete(0, txt_n);
+      return true;
+     }
+
+   ObjectSetInteger(0, bg_n, OBJPROP_XDISTANCE, bar_x);
+   ObjectSetInteger(0, bg_n, OBJPROP_YDISTANCE, box_y);
+   ObjectSetInteger(0, bg_n, OBJPROP_XSIZE,     bar_w);
+   ObjectSetInteger(0, bg_n, OBJPROP_YSIZE,     box_h);
+   ObjectSetString(0,  bg_n, OBJPROP_TOOLTIP,   full_text);
+
+   ObjectSetInteger(0, txt_n, OBJPROP_XDISTANCE, txt_x_pos);
+   ObjectSetInteger(0, txt_n, OBJPROP_YDISTANCE, txt_y_pos);
+   ObjectSetString(0,  txt_n, OBJPROP_TEXT,      fitted_text);
+   ObjectSetString(0,  txt_n, OBJPROP_TOOLTIP,   full_text);
+   return true;
+  }
+
 void UpdateOpenTradeMarker(const string obj_id,
                            const string text,
                            const double price,
@@ -495,74 +688,22 @@ void UpdateOpenTradeMarker(const string obj_id,
                            const color  border_clr,
                            const color  txt_clr)
   {
-   string bg_n  = MNGD_PFX + obj_id + "_bg";
-   string txt_n = MNGD_PFX + obj_id + "_tx";
+   string bg_n, txt_n;
+   int found_mask = FindManagedTradeMarkerObjects(obj_id, bg_n, txt_n);
 
-   // ── Compute candle pixel width from two real bars ─────────────────
-   datetime t_bar0 = iTime(_Symbol, PERIOD_CURRENT, 0);
-   datetime t_bar1 = iTime(_Symbol, PERIOD_CURRENT, 1);
-   if(t_bar0 == 0 || t_bar1 == 0)
+   int bar_x, box_y, bar_w, box_h, txt_x_pos, txt_y_pos;
+   string fitted_text;
+   if(!BuildOpenTradeMarkerLayout(text, price, above_line,
+                                  bar_x, box_y, bar_w, box_h,
+                                  txt_x_pos, txt_y_pos, fitted_text))
      {
-      if(ObjectFind(0, bg_n)  >= 0) ObjectDelete(0, bg_n);
-      if(ObjectFind(0, txt_n) >= 0) ObjectDelete(0, txt_n);
+      if((found_mask & 1) != 0) ObjectDelete(0, bg_n);
+      if((found_mask & 2) != 0) ObjectDelete(0, txt_n);
       return;
      }
-
-   int px0, py0, px1, py1_scr;
-   if(!ChartTimePriceToXY(0, 0, t_bar0, price, px0, py0) ||
-      !ChartTimePriceToXY(0, 0, t_bar1, price, px1, py1_scr))
-     {
-      if(ObjectFind(0, bg_n)  >= 0) ObjectDelete(0, bg_n);
-      if(ObjectFind(0, txt_n) >= 0) ObjectDelete(0, txt_n);
-      return;
-     }
-
-   int candle_px = MathAbs(px0 - px1);   // pixel width of 1 candle
-   if(candle_px < 1) candle_px = 8;      // fallback
-
-   // Scale-aware span: same candle count as preview handles
-   // Starts 1 candle behind bar-0, extends PreviewCandleCount() candles forward
-   int span_candles = PreviewCandleCount() + 1;   // +1 for the 1-back anchor
-   int bar_x = px1 - 2;                           // start from bar-1 position
-   int bar_w = candle_px * span_candles + 2;      // full scale-aware width
-   if(bar_w < 1)
-     {
-      if(ObjectFind(0, bg_n)  >= 0) ObjectDelete(0, bg_n);
-      if(ObjectFind(0, txt_n) >= 0) ObjectDelete(0, txt_n);
-      return;
-     }
-
-   int py = py0;
-
-   // ── Vertical sanity: hide if off-screen ───────────────────────────
-   int chart_h = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
-   if(py < -OVL_BAR_H || py > chart_h + OVL_BAR_H)
-     {
-      if(ObjectFind(0, bg_n)  >= 0) ObjectDelete(0, bg_n);
-      if(ObjectFind(0, txt_n) >= 0) ObjectDelete(0, txt_n);
-      return;
-     }
-
-   int box_h = OVL_BAR_H;
-   int box_y;
-   if(above_line)
-      box_y = py - OVL_LINE_OFFSET - box_h;
-   else
-      box_y = py + OVL_LINE_OFFSET;
-
-   ExpandOverlayBarToFitText(bar_x, bar_w, text);
-   int avail_w  = MathMax(10, bar_w - 2 * OVL_PAD_X);
-   string fitted_text = FitHandleLabelText(text, avail_w);
-
-   uint tw = 0, th = 0;
-   MeasureHandleLabelText(fitted_text == "" ? " " : fitted_text, tw, th);
-
-   // ── Text position ─────────────────────────────────────────────────
-   int txt_x_pos = bar_x + OVL_PAD_X;
-   int txt_y_pos = box_y + MathMax(1, (OVL_BAR_H - (int)th) / 2 - 1);
 
    // ── OBJ_RECTANGLE_LABEL (background bar) ─────────────────────────
-   if(ObjectFind(0, bg_n) < 0)
+   if((found_mask & 1) == 0)
      {
       if(!ObjectCreate(0, bg_n, OBJ_RECTANGLE_LABEL, 0, 0, 0)) return;
       ObjectSetInteger(0, bg_n, OBJPROP_SELECTABLE,  false);
@@ -577,9 +718,10 @@ void UpdateOpenTradeMarker(const string obj_id,
    ObjectSetInteger(0, bg_n, OBJPROP_YSIZE,     box_h);
    ObjectSetInteger(0, bg_n, OBJPROP_BGCOLOR,   bg_clr);
    ObjectSetInteger(0, bg_n, OBJPROP_COLOR,     border_clr);
+   ObjectSetString(0,  bg_n, OBJPROP_TOOLTIP,   text);
 
    // ── OBJ_LABEL (text inside the bar) ──────────────────────────────
-   if(ObjectFind(0, txt_n) < 0)
+   if((found_mask & 2) == 0)
      {
       if(!ObjectCreate(0, txt_n, OBJ_LABEL, 0, 0, 0)) return;
       ObjectSetInteger(0, txt_n, OBJPROP_SELECTABLE, false);
@@ -587,11 +729,12 @@ void UpdateOpenTradeMarker(const string obj_id,
       ObjectSetInteger(0, txt_n, OBJPROP_BACK,       false);
       ObjectSetInteger(0, txt_n, OBJPROP_CORNER,     CORNER_LEFT_UPPER);
       ObjectSetInteger(0, txt_n, OBJPROP_ANCHOR,     ANCHOR_LEFT_UPPER);
+      ApplyHandleLabelFont(txt_n);
      }
-   ApplyHandleLabelFont(txt_n);
    ObjectSetInteger(0, txt_n, OBJPROP_XDISTANCE, txt_x_pos);
    ObjectSetInteger(0, txt_n, OBJPROP_YDISTANCE, txt_y_pos);
    ObjectSetString(0,  txt_n, OBJPROP_TEXT,      fitted_text);
+   ObjectSetString(0,  txt_n, OBJPROP_TOOLTIP,   text);
    ObjectSetInteger(0, txt_n, OBJPROP_COLOR,     txt_clr);
   }
 
@@ -602,14 +745,11 @@ void UpdateOpenTradeMarker(const string obj_id,
 void EraseManagedTradeMarkers(const ulong ticket)
   {
    string pfx = MNGD_PFX + IntegerToString(ticket) + "_";
-   string kinds[] = {"tp_bg", "tp_tx", "sl_bg", "sl_tx", "mid_bg", "mid_tx", "be_bg", "be_tx"};
+   string tk_str = IntegerToString(ticket);
+   string kinds[] = {"tp", "sl", "mid", "be"};
    int cnt = ArraySize(kinds);
    for(int i = 0; i < cnt; i++)
-     {
-      string n = pfx + kinds[i];
-      // Also try the simplified naming
-      if(ObjectFind(0, n) >= 0) ObjectDelete(0, n);
-     }
+      EraseManagedTradeMarkerKind(tk_str, kinds[i]);
    // Fallback: delete by constructed prefix scan
    for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; i--)
      {
@@ -674,12 +814,7 @@ void UpdateManagedTradeMarkers(const ulong ticket)
                             CLR_OVL_HANDLE_BG, CLR_PREV_TP_BORDER, CLR_PREV_TP_TEXT);
      }
    else
-     {
-      string bg_n  = MNGD_PFX + tk_str + "_tp_bg";
-      string txt_n = MNGD_PFX + tk_str + "_tp_tx";
-      if(ObjectFind(0, bg_n)  >= 0) ObjectDelete(0, bg_n);
-      if(ObjectFind(0, txt_n) >= 0) ObjectDelete(0, txt_n);
-     }
+      EraseManagedTradeMarkerKind(tk_str, "tp");
 
    // ── SL marker ─────────────────────────────────────────────────────
    if(sl > 0.0)
@@ -702,12 +837,7 @@ void UpdateManagedTradeMarkers(const ulong ticket)
                             CLR_OVL_HANDLE_BG, CLR_PREV_SL_BORDER, CLR_PREV_SL_TEXT);
      }
    else
-     {
-      string bg_n  = MNGD_PFX + tk_str + "_sl_bg";
-      string txt_n = MNGD_PFX + tk_str + "_sl_tx";
-      if(ObjectFind(0, bg_n)  >= 0) ObjectDelete(0, bg_n);
-      if(ObjectFind(0, txt_n) >= 0) ObjectDelete(0, txt_n);
-     }
+      EraseManagedTradeMarkerKind(tk_str, "sl");
 
    // ── Mid-target / Partial marker ───────────────────────────────────
    int mgd_idx = FindManagedIndex(ticket);
@@ -735,12 +865,7 @@ void UpdateManagedTradeMarkers(const ulong ticket)
                             CLR_OVL_HANDLE_BG, C'120,140,180', C'40,60,120');
      }
    else
-     {
-      string bg_n  = MNGD_PFX + tk_str + "_mid_bg";
-      string txt_n = MNGD_PFX + tk_str + "_mid_tx";
-      if(ObjectFind(0, bg_n)  >= 0) ObjectDelete(0, bg_n);
-      if(ObjectFind(0, txt_n) >= 0) ObjectDelete(0, txt_n);
-     }
+      EraseManagedTradeMarkerKind(tk_str, "mid");
 
    // ── BE marker ─────────────────────────────────────────────────────
    //  Shows only when position is truly protected (SL on profitable side).
@@ -781,12 +906,103 @@ void UpdateManagedTradeMarkers(const ulong ticket)
                             CLR_OVL_HANDLE_BG, CLR_BE_BORDER, C'140,90,0');
      }
    else
+      EraseManagedTradeMarkerKind(tk_str, "be");
+  }
+
+bool UpdateManagedTradeMarkersGeometryOnly(const ulong ticket)
+  {
+   if(!PositionSelectByTicket(ticket))
+      return false;
+
+   double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
+   double sl         = PositionGetDouble(POSITION_SL);
+   double tp         = PositionGetDouble(POSITION_TP);
+   long   pos_type   = PositionGetInteger(POSITION_TYPE);
+   bool   is_buy     = (pos_type == POSITION_TYPE_BUY);
+
+   string tk_str = IntegerToString(ticket);
+
+   if(tp > 0.0)
      {
-      string bg_n2  = MNGD_PFX + tk_str + "_be_bg";
-      string txt_n2 = MNGD_PFX + tk_str + "_be_tx";
-      if(ObjectFind(0, bg_n2)  >= 0) ObjectDelete(0, bg_n2);
-      if(ObjectFind(0, txt_n2) >= 0) ObjectDelete(0, txt_n2);
+      if(!UpdateOpenTradeMarkerGeometryOnly(tk_str + "_tp", tp, is_buy))
+         return false;
      }
+   else if(ManagedTradeMarkerKindExists(tk_str, "tp"))
+      return false;
+
+   if(sl > 0.0)
+     {
+      if(!UpdateOpenTradeMarkerGeometryOnly(tk_str + "_sl", sl, !is_buy))
+         return false;
+     }
+   else if(ManagedTradeMarkerKindExists(tk_str, "sl"))
+      return false;
+
+   int mgd_idx = FindManagedIndex(ticket);
+   bool partial_already_done = (mgd_idx >= 0 && g_managed_trades[mgd_idx].partial_done);
+   bool show_mid = (InpShowMidTargetBlock && tp > 0.0 && !partial_already_done);
+   if(show_mid)
+     {
+      double partial_pct = MathMax(1.0, MathMin(100.0, InpAlgoPartialTrigger));
+      double mid_price = is_buy
+                         ? NormalizePriceValue(open_price + (tp - open_price) * partial_pct / 100.0)
+                         : NormalizePriceValue(open_price - (open_price - tp) * partial_pct / 100.0);
+      if(!UpdateOpenTradeMarkerGeometryOnly(tk_str + "_mid", mid_price, is_buy))
+         return false;
+     }
+   else if(ManagedTradeMarkerKindExists(tk_str, "mid"))
+      return false;
+
+   bool show_be = false;
+   double be_price = 0.0;
+   if(mgd_idx >= 0 && g_managed_trades[mgd_idx].be_applied && sl > 0.0)
+     {
+      if(is_buy && sl >= open_price)
+        { show_be = true; be_price = sl; }
+      else if(!is_buy && sl <= open_price)
+        { show_be = true; be_price = sl; }
+     }
+
+   if(show_be)
+     {
+      if(!UpdateOpenTradeMarkerGeometryOnly(tk_str + "_be", be_price, !is_buy))
+         return false;
+     }
+   else if(ManagedTradeMarkerKindExists(tk_str, "be"))
+      return false;
+
+   return true;
+  }
+
+void CleanOrphanManagedTradeMarkers()
+  {
+   // ── Clean orphan marker objects (tickets no longer in array) ──────
+   //  This is intentionally invalidation-driven; do not scan all chart
+   //  objects on every tick when the tracked ticket set has not changed.
+   for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; i--)
+     {
+      string obj_n = ObjectName(0, i, 0, -1);
+      if(StringFind(obj_n, MNGD_PFX) != 0) continue;
+      string remainder = StringSubstr(obj_n, StringLen(MNGD_PFX));
+      int sep = StringFind(remainder, "_");
+      if(sep <= 0) { ObjectDelete(0, obj_n); continue; }
+      string tk_part = StringSubstr(remainder, 0, sep);
+      ulong tk = (ulong)StringToInteger(tk_part);
+      if(tk == 0 || FindManagedIndex(tk) < 0)
+         ObjectDelete(0, obj_n);
+     }
+  }
+
+bool RefreshManagedTradeMarkersGeometryOnly()
+  {
+   int n = ArraySize(g_managed_trades);
+   for(int i = 0; i < n; i++)
+     {
+      ulong t = g_managed_trades[i].ticket;
+      if(!UpdateManagedTradeMarkersGeometryOnly(t))
+         return false;
+     }
+   return true;
   }
 
 //+------------------------------------------------------------------+
@@ -806,20 +1022,10 @@ void RefreshAllManagedTradeMarkers()
          EraseManagedTradeMarkers(t);
      }
 
-   // ── Clean orphan marker objects (tickets no longer in array) ──────
-   //  Only run occasionally to avoid overhead — simple scan
-   for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; i--)
+   if(g_managed_marker_cleanup_pending)
      {
-      string obj_n = ObjectName(0, i, 0, -1);
-      if(StringFind(obj_n, MNGD_PFX) != 0) continue;
-      // Extract ticket from name: MNGD_PFX + "ticket_kind_suffix"
-      string remainder = StringSubstr(obj_n, StringLen(MNGD_PFX));
-      int sep = StringFind(remainder, "_");
-      if(sep <= 0) { ObjectDelete(0, obj_n); continue; }
-      string tk_part = StringSubstr(remainder, 0, sep);
-      ulong tk = (ulong)StringToInteger(tk_part);
-      if(tk == 0 || FindManagedIndex(tk) < 0)
-         ObjectDelete(0, obj_n);
+      g_managed_marker_cleanup_pending = false;
+      CleanOrphanManagedTradeMarkers();
      }
   }
 
@@ -898,7 +1104,7 @@ double CalcSmartInitDistance()
      }
 
    // ── 2. Broker stop-level floor  ──────────────────────────────────
-   int stop_lvl = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   int stop_lvl = SymbolStopsLevelCached();
    if(stop_lvl > 0)
      {
       double floor_pts = (double)(stop_lvl * 3 + 10);
