@@ -211,6 +211,9 @@ enum
    HANDLE_TEXT_FIT_CACHE_SIZE     = 48
   };
 
+const ulong  SYMBOL_METADATA_TTL_MS = 10000;
+const bool   PERF_TRACE_ENABLED     = false;
+
 
 //+------------------------------------------------------------------+
 //|  ██  STRUCT: TradeParams                                         |
@@ -350,6 +353,53 @@ struct PreviewSnapshot
    void              Clear();
   };
 
+struct SymbolRuntimeMetadata
+  {
+   bool              valid;
+   string            symbol;
+   int               digits;
+   double            volume_min;
+   double            volume_max;
+   double            volume_step;
+   double            tick_size;
+   int               stops_level;
+   int               freeze_level;
+   ulong             revision;
+   ulong             last_refresh_ms;
+
+   void              Clear();
+  };
+
+struct PreviewFinancialKey
+  {
+   bool              valid;
+   TradePanelAction  action;
+   RiskMode          risk_mode;
+   double            risk_percent;
+   double            lots;
+   double            entry_price;
+   double            sl_price;
+   double            tp_price;
+   double            sl_points;
+   double            tp_points;
+   double            account_balance;
+   ulong             metadata_revision;
+
+   void              Clear();
+  };
+
+struct PreviewFinancialState
+  {
+   bool              ready;
+   bool              plan_built;
+   bool              plan_valid;
+   TradeParams       plan;
+   string            build_reason;
+   string            validation_message;
+
+   void              Clear();
+  };
+
 struct HandleTextMeasureCacheEntry
   {
    bool              valid;
@@ -385,6 +435,15 @@ PendingSubtype  DerivePendingSubtype(const TradePanelAction action, const double
 string  PendingSubtypeLabel(const PendingSubtype subtype);
 string  EffectiveActionLabel(const TradePanelAction action, const double entry_price);
 string  ShortPreviewLabel(const TradePanelAction action, const double entry_price);
+bool    RefreshSymbolRuntimeMetadata(const bool force = false);
+int     SymbolDigitsCached();
+double  SymbolVolumeMinCached();
+double  SymbolVolumeMaxCached();
+double  SymbolVolumeStepCached();
+double  SymbolTickSizeCached();
+int     SymbolStopsLevelCached();
+int     SymbolFreezeLevelCached();
+ulong   CurrentSymbolMetadataRevision();
 int     PriceDigits();
 int     VolumeDigits();
 double  NormalizePriceValue(const double price);
@@ -440,8 +499,13 @@ void    DeleteByPrefix();
 void    UpdatePreview(const bool do_redraw = true);
 void    UpdatePreviewGeometryOnly(const bool do_redraw = true);
 void    InvalidatePreviewSnapshot();
+void    InvalidatePreviewFinancialState();
 void    MarkPreviewDirty();
+void    MarkPreviewFinancialDirty();
 bool    ShouldRefreshPreviewOnPulse();
+bool    BuildPreviewGeometrySnapshot(PreviewSnapshot &snapshot);
+bool    EnsurePreviewFinancialState(const PreviewSnapshot &snapshot);
+void    ApplyPreviewFinancialStateToSnapshot(PreviewSnapshot &snapshot);
 void    SuppressChartScroll();
 void    RestoreChartScroll();
 void    ResetDragState();
@@ -464,6 +528,7 @@ void    UpdateOpenTradeMarker(const string obj_id, const string text,
            const double price, const bool above_line,
            const color bg_clr, const color border_clr, const color txt_clr);
 bool    RefreshManagedTradeMarkersGeometryOnly();
+void    RequestManagedTradeMarkerCleanup();
 void    UpdateManagedTradeMarkers(const ulong ticket);
 void    EraseManagedTradeMarkers(const ulong ticket);
 void    EraseAllManagedTradeMarkers();
@@ -591,6 +656,9 @@ public:
 PanelState       g_state;
 TradeParams      g_trade_plan;
 PreviewSnapshot  g_preview_snapshot;
+SymbolRuntimeMetadata g_symbol_metadata;
+PreviewFinancialKey   g_preview_financial_key;
+PreviewFinancialState g_preview_financial_state;
 UiDispatchState  g_ui;
 CTrade           g_trade;
 CLotForgePanel   g_panel;
@@ -607,7 +675,10 @@ bool             g_scroll_suppressed  = false;
 bool             g_status_sticky      = false;
 bool             g_preview_snapshot_ready = false;
 bool             g_preview_dirty      = true;
+bool             g_preview_financial_dirty = true;
 double           g_preview_market_entry_key = 0.0;
+int              g_preview_geometry_candle_count = 0;
+datetime         g_preview_geometry_bar_right = 0;
 bool             g_chart_redraw_pending = false;
 HandleTextMeasureCacheEntry g_handle_text_measure_cache[HANDLE_TEXT_MEASURE_CACHE_SIZE];
 HandleTextFitCacheEntry     g_handle_text_fit_cache[HANDLE_TEXT_FIT_CACHE_SIZE];
@@ -630,6 +701,12 @@ bool             g_ui_interaction_active = false;
 // ── Gestão de posição por ticket ──────────────────────────────────
 ManagedTradeState  g_managed_trades[];
 bool               g_algo_trading_enabled = false;   // estado lógico do Algo Trading
+bool               g_managed_marker_cleanup_pending = true;
+ulong              g_perf_preview_geometry_refresh_count = 0;
+ulong              g_perf_preview_financial_refresh_count = 0;
+ulong              g_perf_preview_overlay_only_refresh_count = 0;
+ulong              g_perf_symbol_metadata_refresh_count = 0;
+ulong              g_perf_symbol_metadata_refresh_failure_count = 0;
 
 //+------------------------------------------------------------------+
 //|  ██  IMPLEMENTAÇÕES EXTRAÍDAS                                   |
@@ -647,11 +724,15 @@ bool               g_algo_trading_enabled = false;   // estado lógico do Algo T
 int OnInit()
   {
    g_ui.Reset();
+   g_symbol_metadata.Clear();
+   g_preview_financial_key.Clear();
+   g_preview_financial_state.Clear();
    g_ui_interaction_active = false;
    g_chart_redraw_pending = false;
    g_trade.SetExpertMagicNumber(InpMagicNumber);
    g_trade.SetDeviationInPoints(InpDeviationPoints);
    g_trade.SetTypeFillingBySymbol(_Symbol);
+   RefreshSymbolRuntimeMetadata(true);
 
    // ── Detectar se é mudança de TF: g_panel e chart objects já existem ─
    bool chart_change = RestoreStateFromChartChange();
@@ -778,6 +859,11 @@ void OnTick()
 
 void OnTimer()
   {
+   ulong metadata_revision = CurrentSymbolMetadataRevision();
+   if(RefreshSymbolRuntimeMetadata() &&
+      CurrentSymbolMetadataRevision() != metadata_revision)
+      MarkPreviewDirty();
+
    // Skip while the user is actively interacting with the panel.
    if(!ShouldPauseUiHeavyRefresh() && ShouldRefreshPreviewOnPulse())
       UpdatePreview();

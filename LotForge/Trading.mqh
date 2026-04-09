@@ -363,12 +363,9 @@ bool CalcLotsFromRiskPercent(const double entry_price, const double sl_price,
    double raw_lots = risk_money / loss_per_lot;
 
    // ── Normalize to broker constraints ───────────────────────────────
-   double vol_min  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double vol_max  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
-   double vol_step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   if(vol_min  <= 0.0) vol_min  = 0.01;
-   if(vol_max  <= 0.0) vol_max  = 100.0;
-   if(vol_step <= 0.0) vol_step = 0.01;
+   double vol_min  = SymbolVolumeMinCached();
+   double vol_max  = SymbolVolumeMaxCached();
+   double vol_step = SymbolVolumeStepCached();
 
    // Floor to step boundary (conservative — do not exceed risk target)
    double steps     = MathFloor(raw_lots / vol_step);
@@ -544,8 +541,8 @@ bool ValidateTradeRequest(const TradeParams &params, string &message)
    if(params.lots <= 0.0)
      { message = "Erro: lotes devem ser > 0."; return false; }
 
-   double vol_min  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double vol_max  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double vol_min  = SymbolVolumeMinCached();
+   double vol_max  = SymbolVolumeMaxCached();
    if(vol_min > 0.0 && params.lots < vol_min)
      { message = StringFormat("Erro: lotes %.5f abaixo do mínimo %.5f.", params.lots, vol_min); return false; }
    if(vol_max > 0.0 && params.lots > vol_max)
@@ -553,7 +550,7 @@ bool ValidateTradeRequest(const TradeParams &params, string &message)
 
    // ── 7. Stops-level distance ───────────────────────────────────────
    // SYMBOL_TRADE_STOPS_LEVEL is in points (integer).
-   int stops_level_pts = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   int stops_level_pts = SymbolStopsLevelCached();
    if(stops_level_pts > 0)
      {
       double min_dist = stops_level_pts * _Point;
@@ -602,7 +599,7 @@ bool ValidateTradeRequest(const TradeParams &params, string &message)
      }
 
    // ── 8. Freeze level (additional broker constraint) ────────────────
-   int freeze_level_pts = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   int freeze_level_pts = SymbolFreezeLevelCached();
    if(freeze_level_pts > 0 && IsPendingAction(g_state.action))
      {
       MqlTick tick;

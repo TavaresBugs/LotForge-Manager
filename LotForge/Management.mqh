@@ -35,6 +35,47 @@ void PreviewSnapshot::Clear()
    tp_label           = "";
   }
 
+void SymbolRuntimeMetadata::Clear()
+  {
+   valid           = false;
+   symbol          = "";
+   digits          = 5;
+   volume_min      = 0.01;
+   volume_max      = 100.0;
+   volume_step     = 0.01;
+   tick_size       = 0.0;
+   stops_level     = 0;
+   freeze_level    = 0;
+   revision        = 0;
+   last_refresh_ms = 0;
+  }
+
+void PreviewFinancialKey::Clear()
+  {
+   valid            = false;
+   action           = ACTION_NONE;
+   risk_mode        = RISK_MODE_LOTS;
+   risk_percent     = 0.0;
+   lots             = 0.0;
+   entry_price      = 0.0;
+   sl_price         = 0.0;
+   tp_price         = 0.0;
+   sl_points        = 0.0;
+   tp_points        = 0.0;
+   account_balance  = 0.0;
+   metadata_revision = 0;
+  }
+
+void PreviewFinancialState::Clear()
+  {
+   ready              = false;
+   plan_built         = false;
+   plan_valid         = false;
+   plan.Clear();
+   build_reason       = "";
+   validation_message = "";
+  }
+
 void PanelState::Init()
   {
    panel_x     = InpPanelX;
@@ -86,6 +127,32 @@ int FindManagedIndex(const ulong ticket)
       if(g_managed_trades[i].ticket == ticket)
          return i;
    return -1;
+  }
+
+void RequestManagedTradeMarkerCleanup()
+  {
+   g_managed_marker_cleanup_pending = true;
+  }
+
+int FindManagedTradeMarkerObjects(const string obj_id,
+                                  string      &bg_n,
+                                  string      &txt_n)
+  {
+   bg_n = MNGD_PFX + obj_id + "_bg";
+   txt_n = MNGD_PFX + obj_id + "_tx";
+
+   int found_mask = 0;
+   if(ObjectFind(0, bg_n) >= 0)  found_mask |= 1;
+   if(ObjectFind(0, txt_n) >= 0) found_mask |= 2;
+   return found_mask;
+  }
+
+int FindManagedTradeMarkerKindObjects(const string tk_str,
+                                      const string kind,
+                                      string      &bg_n,
+                                      string      &txt_n)
+  {
+   return FindManagedTradeMarkerObjects(tk_str + "_" + kind, bg_n, txt_n);
   }
 
 //+------------------------------------------------------------------+
@@ -154,6 +221,7 @@ void SyncManagedTradeState()
         {
          // Apagar markers visuais antes de remover entrada
          EraseManagedTradeMarkers(g_managed_trades[i].ticket);
+         RequestManagedTradeMarkerCleanup();
          // Remover entrada: shift para baixo
          for(int j = i; j < n - 1; j++)
             g_managed_trades[j] = g_managed_trades[j + 1];
@@ -255,7 +323,7 @@ bool TryManualBreakEven(const ulong ticket)
      }
 
    // ── Verificar stop level mínimo do broker ────────────────────────
-   int stop_lvl = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   int stop_lvl = SymbolStopsLevelCached();
    MqlTick tick;
    SymbolInfoTick(_Symbol, tick);
    double current_price = (type == POSITION_TYPE_BUY) ? tick.bid : tick.ask;
@@ -342,9 +410,8 @@ bool TryPartialClose(const ulong ticket)
    if(pct < InpAlgoPartialTrigger) return false;
 
    double lote      = PositionGetDouble(POSITION_VOLUME);
-   double lote_min  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double lote_step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   if(lote_step <= 0.0) lote_step = 0.01;
+   double lote_min  = SymbolVolumeMinCached();
+   double lote_step = SymbolVolumeStepCached();
 
    double lote_fechar = MathFloor((lote * InpAlgoPartialClosePct / 100.0) / lote_step) * lote_step;
    if(lote_fechar < lote_min)  lote_fechar = lote_min;
@@ -433,7 +500,7 @@ bool TryTrailingStop(const ulong ticket)
    if(!should_move) return false;
 
    // Verificar stop level
-   int stop_lvl = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   int stop_lvl = SymbolStopsLevelCached();
    MqlTick tick;
    SymbolInfoTick(_Symbol, tick);
    double cur_p = (type == POSITION_TYPE_BUY) ? tick.bid : tick.ask;
@@ -562,26 +629,25 @@ bool BuildOpenTradeMarkerLayout(const string text,
 
 void EraseManagedTradeMarkerKind(const string tk_str, const string kind)
   {
-   string bg_n  = MNGD_PFX + tk_str + "_" + kind + "_bg";
-   string txt_n = MNGD_PFX + tk_str + "_" + kind + "_tx";
-   if(ObjectFind(0, bg_n)  >= 0) ObjectDelete(0, bg_n);
-   if(ObjectFind(0, txt_n) >= 0) ObjectDelete(0, txt_n);
+   string bg_n, txt_n;
+   int found_mask = FindManagedTradeMarkerKindObjects(tk_str, kind, bg_n, txt_n);
+   if((found_mask & 1) != 0) ObjectDelete(0, bg_n);
+   if((found_mask & 2) != 0) ObjectDelete(0, txt_n);
   }
 
 bool ManagedTradeMarkerKindExists(const string tk_str, const string kind)
   {
-   string bg_n  = MNGD_PFX + tk_str + "_" + kind + "_bg";
-   string txt_n = MNGD_PFX + tk_str + "_" + kind + "_tx";
-   return (ObjectFind(0, bg_n) >= 0 || ObjectFind(0, txt_n) >= 0);
+   string bg_n, txt_n;
+   return (FindManagedTradeMarkerKindObjects(tk_str, kind, bg_n, txt_n) != 0);
   }
 
 bool UpdateOpenTradeMarkerGeometryOnly(const string obj_id,
                                        const double price,
                                        const bool   above_line)
   {
-   string bg_n  = MNGD_PFX + obj_id + "_bg";
-   string txt_n = MNGD_PFX + obj_id + "_tx";
-   if(ObjectFind(0, bg_n) < 0 || ObjectFind(0, txt_n) < 0)
+   string bg_n, txt_n;
+   int found_mask = FindManagedTradeMarkerObjects(obj_id, bg_n, txt_n);
+   if(found_mask != 3)
       return false;
 
    string full_text = ObjectGetString(0, txt_n, OBJPROP_TOOLTIP);
@@ -622,8 +688,8 @@ void UpdateOpenTradeMarker(const string obj_id,
                            const color  border_clr,
                            const color  txt_clr)
   {
-   string bg_n  = MNGD_PFX + obj_id + "_bg";
-   string txt_n = MNGD_PFX + obj_id + "_tx";
+   string bg_n, txt_n;
+   int found_mask = FindManagedTradeMarkerObjects(obj_id, bg_n, txt_n);
 
    int bar_x, box_y, bar_w, box_h, txt_x_pos, txt_y_pos;
    string fitted_text;
@@ -631,13 +697,13 @@ void UpdateOpenTradeMarker(const string obj_id,
                                   bar_x, box_y, bar_w, box_h,
                                   txt_x_pos, txt_y_pos, fitted_text))
      {
-      if(ObjectFind(0, bg_n)  >= 0) ObjectDelete(0, bg_n);
-      if(ObjectFind(0, txt_n) >= 0) ObjectDelete(0, txt_n);
+      if((found_mask & 1) != 0) ObjectDelete(0, bg_n);
+      if((found_mask & 2) != 0) ObjectDelete(0, txt_n);
       return;
      }
 
    // ── OBJ_RECTANGLE_LABEL (background bar) ─────────────────────────
-   if(ObjectFind(0, bg_n) < 0)
+   if((found_mask & 1) == 0)
      {
       if(!ObjectCreate(0, bg_n, OBJ_RECTANGLE_LABEL, 0, 0, 0)) return;
       ObjectSetInteger(0, bg_n, OBJPROP_SELECTABLE,  false);
@@ -655,7 +721,7 @@ void UpdateOpenTradeMarker(const string obj_id,
    ObjectSetString(0,  bg_n, OBJPROP_TOOLTIP,   text);
 
    // ── OBJ_LABEL (text inside the bar) ──────────────────────────────
-   if(ObjectFind(0, txt_n) < 0)
+   if((found_mask & 2) == 0)
      {
       if(!ObjectCreate(0, txt_n, OBJ_LABEL, 0, 0, 0)) return;
       ObjectSetInteger(0, txt_n, OBJPROP_SELECTABLE, false);
@@ -911,7 +977,8 @@ bool UpdateManagedTradeMarkersGeometryOnly(const ulong ticket)
 void CleanOrphanManagedTradeMarkers()
   {
    // ── Clean orphan marker objects (tickets no longer in array) ──────
-   //  Only run on the full path to keep visual-only refresh cheap.
+   //  This is intentionally invalidation-driven; do not scan all chart
+   //  objects on every tick when the tracked ticket set has not changed.
    for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; i--)
      {
       string obj_n = ObjectName(0, i, 0, -1);
@@ -955,7 +1022,11 @@ void RefreshAllManagedTradeMarkers()
          EraseManagedTradeMarkers(t);
      }
 
-   CleanOrphanManagedTradeMarkers();
+   if(g_managed_marker_cleanup_pending)
+     {
+      g_managed_marker_cleanup_pending = false;
+      CleanOrphanManagedTradeMarkers();
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -1033,7 +1104,7 @@ double CalcSmartInitDistance()
      }
 
    // ── 2. Broker stop-level floor  ──────────────────────────────────
-   int stop_lvl = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   int stop_lvl = SymbolStopsLevelCached();
    if(stop_lvl > 0)
      {
       double floor_pts = (double)(stop_lvl * 3 + 10);

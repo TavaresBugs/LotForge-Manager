@@ -4,8 +4,7 @@
 
 void AdjustLots(const int direction)
   {
-   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   if(step <= 0.0) step = 0.01;
+   double step = SymbolVolumeStepCached();
    g_state.lots = NormalizeVolumeValue(g_state.lots + step * direction);
   }
 
@@ -51,9 +50,7 @@ bool PreviewLinePriceMoved(const string kind, const double expected_price)
    if(live_price <= 0.0)
       return false;
 
-   double tol = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   if(tol <= 0.0)
-      tol = _Point;
+   double tol = SymbolTickSizeCached();
 
    return (MathAbs(live_price - expected_price) > tol * 0.5);
   }
@@ -147,6 +144,14 @@ void CalcPreviewTimeRange(datetime &t1, datetime &t2)
    if(bar_left == 0)
       bar_left = bar_right - (datetime)((long)candles * PeriodSeconds()); // fallback
    t1 = bar_left;
+  }
+
+datetime CurrentPreviewBarRightTime()
+  {
+   datetime bar_right = iTime(_Symbol, PERIOD_CURRENT, 1);
+   if(bar_right == 0) bar_right = iTime(_Symbol, PERIOD_CURRENT, 0);
+   if(bar_right == 0) bar_right = TimeCurrent();
+   return bar_right;
   }
 
 //+------------------------------------------------------------------+
@@ -486,8 +491,10 @@ void EraseOverlayLabel(const string kind)
   {
    string bg_n  = PREV_PFX + kind + "_ovbg";
    string txt_n = PREV_PFX + kind + "_ovtxt";
-   if(ObjectFind(0, bg_n)  >= 0) ObjectDelete(0, bg_n);
-   if(ObjectFind(0, txt_n) >= 0) ObjectDelete(0, txt_n);
+   bool bg_exists  = (ObjectFind(0, bg_n)  >= 0);
+   bool txt_exists = (ObjectFind(0, txt_n) >= 0);
+   if(bg_exists)  ObjectDelete(0, bg_n);
+   if(txt_exists) ObjectDelete(0, txt_n);
   }
 
 //+------------------------------------------------------------------+
@@ -579,11 +586,104 @@ void UpdateOverlayPreviewLabel(const string kind,
    ObjectSetInteger(0, txt_n, OBJPROP_COLOR,     txt_clr);
   }
 
+void UpdateOverlayPreviewLabelsFromSnapshot(const PreviewSnapshot &snapshot,
+                                            const datetime        t1,
+                                            const datetime        t2)
+  {
+   double entry_price = snapshot.entry_price;
+   double sl_price    = snapshot.sl_price;
+   double tp_price    = snapshot.tp_price;
+
+   if(tp_price > 0.0)
+     {
+      bool tp_bar_above = snapshot.is_buy;
+      UpdateOverlayPreviewLabel("tp", snapshot.tp_label, tp_price, t1, t2,
+                                tp_bar_above,
+                                CLR_OVL_HANDLE_BG, C'160,160,160', clrBlack);
+     }
+   else
+      EraseOverlayLabel("tp");
+
+   if(sl_price > 0.0)
+     {
+      bool sl_bar_above = !snapshot.is_buy;
+      UpdateOverlayPreviewLabel("sl", snapshot.sl_label, sl_price, t1, t2,
+                                sl_bar_above,
+                                CLR_OVL_HANDLE_BG, C'160,160,160', clrBlack);
+     }
+   else
+      EraseOverlayLabel("sl");
+
+   bool en_bar_above = !snapshot.is_buy;
+   UpdateOverlayPreviewLabel("en", snapshot.en_label, entry_price, t1, t2,
+                             en_bar_above,
+                             CLR_OVL_HANDLE_BG, C'160,160,160', clrBlack);
+  }
+
+void RememberPreviewGeometryState(const datetime bar_right)
+  {
+   g_preview_geometry_candle_count = PreviewCandleCount();
+   g_preview_geometry_bar_right    = bar_right;
+  }
+
+bool CanUseOverlayOnlyPreviewRefresh()
+  {
+   if(!g_preview_snapshot_ready || !g_preview_snapshot.visible)
+      return false;
+
+   if(g_preview_geometry_candle_count <= 0 || g_preview_geometry_bar_right <= 0)
+      return false;
+
+   if(PreviewCandleCount() != g_preview_geometry_candle_count)
+      return false;
+
+   return (CurrentPreviewBarRightTime() == g_preview_geometry_bar_right);
+  }
+
+bool PreviewFinancialKeysMatch(const PreviewFinancialKey &lhs,
+                               const PreviewFinancialKey &rhs)
+  {
+   return (lhs.valid &&
+           rhs.valid &&
+           lhs.action            == rhs.action &&
+           lhs.risk_mode         == rhs.risk_mode &&
+           lhs.risk_percent      == rhs.risk_percent &&
+           lhs.lots              == rhs.lots &&
+           lhs.entry_price       == rhs.entry_price &&
+           lhs.sl_price          == rhs.sl_price &&
+           lhs.tp_price          == rhs.tp_price &&
+           lhs.sl_points         == rhs.sl_points &&
+           lhs.tp_points         == rhs.tp_points &&
+           lhs.account_balance   == rhs.account_balance &&
+           lhs.metadata_revision == rhs.metadata_revision);
+  }
+
+void BuildPreviewFinancialKey(const PreviewSnapshot &snapshot,
+                              PreviewFinancialKey   &key)
+  {
+   key.Clear();
+   if(!snapshot.visible)
+      return;
+
+   key.valid            = true;
+   key.action           = snapshot.action;
+   key.risk_mode        = g_state.risk_mode;
+   key.risk_percent     = NormalizeDouble(g_state.risk_percent, 4);
+   key.lots             = NormalizeDouble(g_state.lots, VolumeDigits());
+   key.entry_price      = NormalizePriceValue(snapshot.entry_price);
+   key.sl_price         = (snapshot.sl_price > 0.0) ? NormalizePriceValue(snapshot.sl_price) : 0.0;
+   key.tp_price         = (snapshot.tp_price > 0.0) ? NormalizePriceValue(snapshot.tp_price) : 0.0;
+   key.sl_points        = MathMax(0.0, MathRound(g_state.sl_points));
+   key.tp_points        = MathMax(0.0, MathRound(g_state.tp_points));
+   key.account_balance  = NormalizeDouble(AccountInfoDouble(ACCOUNT_BALANCE), 2);
+   key.metadata_revision = CurrentSymbolMetadataRevision();
+  }
+
 //+------------------------------------------------------------------+
 //|  ██  4A.1: Preview snapshot + geometry renderer                  |
 //+------------------------------------------------------------------+
 
-bool BuildPreviewSnapshot(PreviewSnapshot &snapshot)
+bool BuildPreviewGeometrySnapshot(PreviewSnapshot &snapshot)
   {
    snapshot.Clear();
 
@@ -602,19 +702,6 @@ bool BuildPreviewSnapshot(PreviewSnapshot &snapshot)
    snapshot.sl_price = EffectiveStateSLPrice(g_state.action, snapshot.entry_price);
    snapshot.tp_price = EffectiveStateTPPrice(g_state.action, snapshot.entry_price);
 
-   TradeParams plan;
-   plan.Clear();
-   string build_reason;
-   string validate_msg;
-   bool plan_built = BuildTradePlan(plan, build_reason);
-   snapshot.plan_valid = plan_built && ValidateTradeRequest(plan, validate_msg);
-
-   snapshot.plan_lots    = snapshot.plan_valid ? plan.lots : g_state.lots;
-   snapshot.risk_money   = snapshot.plan_valid ? plan.risk_money : 0.0;
-   snapshot.reward_money = snapshot.plan_valid ? plan.reward_money : 0.0;
-   snapshot.risk_pct     = snapshot.plan_valid ? plan.risk_pct : 0.0;
-   snapshot.reward_pct   = snapshot.plan_valid ? plan.reward_pct : 0.0;
-
    snapshot.effective_label    = EffectiveActionLabel(g_state.action, snapshot.entry_price);
    snapshot.short_label        = ShortPreviewLabel(g_state.action, snapshot.entry_price);
    snapshot.entry_line_tooltip = snapshot.effective_label + " @ " + FormatPrice(snapshot.entry_price);
@@ -624,6 +711,52 @@ bool BuildPreviewSnapshot(PreviewSnapshot &snapshot)
    snapshot.tp_line_tooltip    = (snapshot.tp_price > 0.0)
                                  ? "TP @ " + FormatPrice(snapshot.tp_price)
                                  : "";
+
+   snapshot.visible = true;
+   return true;
+  }
+
+bool EnsurePreviewFinancialState(const PreviewSnapshot &snapshot)
+  {
+   PreviewFinancialKey next_key;
+   BuildPreviewFinancialKey(snapshot, next_key);
+   if(!next_key.valid)
+     {
+      InvalidatePreviewFinancialState();
+      return false;
+     }
+
+   if(!g_preview_financial_dirty &&
+      g_preview_financial_state.ready &&
+      PreviewFinancialKeysMatch(g_preview_financial_key, next_key))
+      return true;
+
+   PreviewFinancialState next_state;
+   next_state.Clear();
+   next_state.plan_built = BuildTradePlan(next_state.plan, next_state.build_reason);
+   next_state.plan_valid = next_state.plan_built &&
+                           ValidateTradeRequest(next_state.plan, next_state.validation_message);
+   if(!next_state.plan_built)
+      next_state.validation_message = next_state.build_reason;
+   next_state.ready = true;
+
+   g_preview_financial_key   = next_key;
+   g_preview_financial_state = next_state;
+   g_preview_financial_dirty = false;
+   g_perf_preview_financial_refresh_count++;
+   TracePerfEvent("preview financial state refreshed");
+   return true;
+  }
+
+void ApplyPreviewFinancialStateToSnapshot(PreviewSnapshot &snapshot)
+  {
+   snapshot.plan_valid = (g_preview_financial_state.ready &&
+                          g_preview_financial_state.plan_valid);
+   snapshot.plan_lots    = snapshot.plan_valid ? g_preview_financial_state.plan.lots : g_state.lots;
+   snapshot.risk_money   = snapshot.plan_valid ? g_preview_financial_state.plan.risk_money : 0.0;
+   snapshot.reward_money = snapshot.plan_valid ? g_preview_financial_state.plan.reward_money : 0.0;
+   snapshot.risk_pct     = snapshot.plan_valid ? g_preview_financial_state.plan.risk_pct : 0.0;
+   snapshot.reward_pct   = snapshot.plan_valid ? g_preview_financial_state.plan.reward_pct : 0.0;
 
    snapshot.en_label = snapshot.short_label + " " + FormatPrice(snapshot.entry_price) +
                        " | Lots " + FormatLots(snapshot.plan_lots);
@@ -655,8 +788,15 @@ bool BuildPreviewSnapshot(PreviewSnapshot &snapshot)
       else
          snapshot.tp_label = "TP " + FormatPrice(snapshot.tp_price);
      }
+  }
 
-   snapshot.visible = true;
+bool BuildPreviewSnapshot(PreviewSnapshot &snapshot)
+  {
+   if(!BuildPreviewGeometrySnapshot(snapshot))
+      return false;
+
+   EnsurePreviewFinancialState(snapshot);
+   ApplyPreviewFinancialStateToSnapshot(snapshot);
    return true;
   }
 
@@ -683,15 +823,10 @@ void UpdatePreviewZonesFromSnapshot(const PreviewSnapshot &snapshot,
       DrawPreviewZone("tp", t1, t2, tp_hi, tp_lo,
                       CLR_PREV_TP_FILL, CLR_PREV_TP_BORDER,
                       CLR_PREV_TP_TEXT, snapshot.tp_label, tp_price);
-      bool tp_bar_above = snapshot.is_buy;
-      UpdateOverlayPreviewLabel("tp", snapshot.tp_label, tp_price, t1, t2,
-                                tp_bar_above,
-                                CLR_OVL_HANDLE_BG, C'160,160,160', clrBlack);
      }
    else
      {
       ErasePreviewZone("tp");
-      EraseOverlayLabel("tp");
      }
 
    if(sl_price > 0.0)
@@ -705,25 +840,17 @@ void UpdatePreviewZonesFromSnapshot(const PreviewSnapshot &snapshot,
       DrawPreviewZone("sl", t1, t2, sl_hi, sl_lo,
                       CLR_PREV_SL_FILL, CLR_PREV_SL_BORDER,
                       CLR_PREV_SL_TEXT, snapshot.sl_label, sl_price);
-      bool sl_bar_above = !snapshot.is_buy;
-      UpdateOverlayPreviewLabel("sl", snapshot.sl_label, sl_price, t1, t2,
-                                sl_bar_above,
-                                CLR_OVL_HANDLE_BG, C'160,160,160', clrBlack);
      }
    else
      {
       ErasePreviewZone("sl");
-      EraseOverlayLabel("sl");
      }
 
    DrawPreviewZone("en", t1, t2,
                    entry_price + band, entry_price - band,
                    CLR_PREV_EN_FILL, CLR_PREV_EN_BORDER,
                    CLR_PREV_EN_TEXT, snapshot.en_label, entry_price);
-   bool en_bar_above = !snapshot.is_buy;
-   UpdateOverlayPreviewLabel("en", snapshot.en_label, entry_price, t1, t2,
-                             en_bar_above,
-                             CLR_OVL_HANDLE_BG, C'160,160,160', clrBlack);
+   UpdateOverlayPreviewLabelsFromSnapshot(snapshot, t1, t2);
   }
 
 void RenderPreviewFromSnapshot(const PreviewSnapshot &snapshot,
@@ -737,6 +864,8 @@ void RenderPreviewFromSnapshot(const PreviewSnapshot &snapshot,
 
    datetime t1, t2;
    CalcPreviewTimeRange(t1, t2);
+   RememberPreviewGeometryState(t2);
+   g_perf_preview_geometry_refresh_count++;
 
    EnsurePreviewLine("entry", snapshot.entry_price,
                      CLR_ENTRY_LINE, STYLE_DOT, 1,
@@ -804,6 +933,17 @@ void UpdatePreviewGeometryOnly(const bool do_redraw)
    if(ShouldRefreshPreviewOnPulse())
      {
       UpdatePreview(do_redraw);
+      return;
+     }
+
+   if(CanUseOverlayOnlyPreviewRefresh())
+     {
+      datetime t1, t2;
+      CalcPreviewTimeRange(t1, t2);
+      UpdateOverlayPreviewLabelsFromSnapshot(g_preview_snapshot, t1, t2);
+      g_perf_preview_overlay_only_refresh_count++;
+      if(do_redraw)
+         RequestChartRedraw();
       return;
      }
 
@@ -954,7 +1094,7 @@ bool ApplyLineDrag(const int mx, const int my)
    if(!ResolveDragPriceFromMouse(mx, my, new_price)) return false;
    if(new_price <= 0.0) return false;
 
-   double tick_sz = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tick_sz = SymbolTickSizeCached();
    new_price = (tick_sz > 0.0)
                ? NormalizePriceValue(MathRound(new_price / tick_sz) * tick_sz)
                : NormalizePriceValue(new_price);
@@ -1039,7 +1179,7 @@ void HandleNativeLineDrag(const string obj_name)
    double new_price = ObjectGetDouble(0, obj_name, OBJPROP_PRICE);
    if(new_price <= 0.0) return;
 
-   double tick_sz = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tick_sz = SymbolTickSizeCached();
    if(tick_sz > 0.0)
       new_price = NormalizePriceValue(MathRound(new_price / tick_sz) * tick_sz);
    else
