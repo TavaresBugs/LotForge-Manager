@@ -865,7 +865,8 @@ string DetectOverlayBarHit(const int mx, const int my)
           _by=(int)ObjectGetInteger(0,_n,OBJPROP_YDISTANCE);
           _bw=(int)ObjectGetInteger(0,_n,OBJPROP_XSIZE);
           _bh=(int)ObjectGetInteger(0,_n,OBJPROP_YSIZE);
-          if(mx>=_bx && mx<=_bx+_bw && my>=_by && my<=_by+_bh) return "entry";
+          if(mx>=_bx-OVL_HIT_PAD_PX && mx<=_bx+_bw+OVL_HIT_PAD_PX &&
+             my>=_by-OVL_HIT_PAD_PX && my<=_by+_bh+OVL_HIT_PAD_PX) return "entry";
          }
       }
     // sl bar
@@ -878,7 +879,8 @@ string DetectOverlayBarHit(const int mx, const int my)
           _by=(int)ObjectGetInteger(0,_n,OBJPROP_YDISTANCE);
           _bw=(int)ObjectGetInteger(0,_n,OBJPROP_XSIZE);
           _bh=(int)ObjectGetInteger(0,_n,OBJPROP_YSIZE);
-          if(mx>=_bx && mx<=_bx+_bw && my>=_by && my<=_by+_bh) return "sl";
+          if(mx>=_bx-OVL_HIT_PAD_PX && mx<=_bx+_bw+OVL_HIT_PAD_PX &&
+             my>=_by-OVL_HIT_PAD_PX && my<=_by+_bh+OVL_HIT_PAD_PX) return "sl";
          }
       }
     // tp bar
@@ -891,12 +893,52 @@ string DetectOverlayBarHit(const int mx, const int my)
           _by=(int)ObjectGetInteger(0,_n,OBJPROP_YDISTANCE);
           _bw=(int)ObjectGetInteger(0,_n,OBJPROP_XSIZE);
           _bh=(int)ObjectGetInteger(0,_n,OBJPROP_YSIZE);
-          if(mx>=_bx && mx<=_bx+_bw && my>=_by && my<=_by+_bh) return "tp";
+          if(mx>=_bx-OVL_HIT_PAD_PX && mx<=_bx+_bw+OVL_HIT_PAD_PX &&
+             my>=_by-OVL_HIT_PAD_PX && my<=_by+_bh+OVL_HIT_PAD_PX) return "tp";
          }
       }
    }
 
    return "";
+  }
+
+bool ResolveDragPriceFromMouse(const int mx, const int my, double &out_price)
+  {
+   int      subwin;
+   datetime t_dummy;
+   double   price = 0.0;
+
+   if(ChartXYToTimePrice(0, mx, my, subwin, t_dummy, price) && price > 0.0)
+     {
+      out_price = price;
+      return true;
+     }
+
+   int chart_w = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   int chart_h = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+   if(chart_w <= 1 || chart_h <= 1)
+      return false;
+
+   int clamped_x = MathMax(0, MathMin(chart_w - 2, mx));
+   int clamped_y = MathMax(0, MathMin(chart_h - 2, my));
+
+   if(ChartXYToTimePrice(0, clamped_x, clamped_y, subwin, t_dummy, price) && price > 0.0)
+     {
+      out_price = price;
+      return true;
+     }
+
+   for(int dx = 1; dx <= LINE_HIT_TOL_PX; dx++)
+     {
+      int probe_x = MathMax(0, clamped_x - dx);
+      if(ChartXYToTimePrice(0, probe_x, clamped_y, subwin, t_dummy, price) && price > 0.0)
+        {
+         out_price = price;
+         return true;
+        }
+     }
+
+   return false;
   }
 
 bool ApplyLineDrag(const int mx, const int my)
@@ -908,10 +950,8 @@ bool ApplyLineDrag(const int mx, const int my)
    double old_tp_points       = g_state.tp_points;
    double old_market_sl_price = g_state.market_sl_price;
    double old_market_tp_price = g_state.market_tp_price;
-   int      subwin;
-   datetime t_dummy;
    double   new_price;
-   if(!ChartXYToTimePrice(0, mx, my, subwin, t_dummy, new_price)) return false;
+   if(!ResolveDragPriceFromMouse(mx, my, new_price)) return false;
    if(new_price <= 0.0) return false;
 
    double tick_sz = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);

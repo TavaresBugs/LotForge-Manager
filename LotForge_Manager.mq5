@@ -204,6 +204,7 @@ const int    OVL_LINE_OFFSET       = -1;   // bar overlaps line 1px — feels at
 const int    OVL_FALLBACK_CHAR_W   = 7;    // px per char if TextGetSize returns 0
 const int    OVL_FALLBACK_H        = 20;   // matches OVL_BAR_H
 const int    OVL_BAR_H             = 20;   // v1.09: increased from 18 for better drag target
+const int    OVL_HIT_PAD_PX        = 4;    // easier overlay drag capture around the handle
 enum
   {
    HANDLE_TEXT_MEASURE_CACHE_SIZE = 48,
