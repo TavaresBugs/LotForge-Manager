@@ -1120,7 +1120,9 @@ void ProcessUiDispatch()
       UpdatePreview(false);
 
    if(g_ui.redraw)
-      ChartRedraw(0);
+      RequestChartRedraw();
+
+   FlushPendingChartRedraw();
 
    g_ui.Reset();
   }

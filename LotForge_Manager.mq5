@@ -204,6 +204,11 @@ const int    OVL_LINE_OFFSET       = -1;   // bar overlaps line 1px — feels at
 const int    OVL_FALLBACK_CHAR_W   = 7;    // px per char if TextGetSize returns 0
 const int    OVL_FALLBACK_H        = 20;   // matches OVL_BAR_H
 const int    OVL_BAR_H             = 20;   // v1.09: increased from 18 for better drag target
+enum
+  {
+   HANDLE_TEXT_MEASURE_CACHE_SIZE = 48,
+   HANDLE_TEXT_FIT_CACHE_SIZE     = 48
+  };
 
 
 //+------------------------------------------------------------------+
@@ -344,6 +349,24 @@ struct PreviewSnapshot
    void              Clear();
   };
 
+struct HandleTextMeasureCacheEntry
+  {
+   bool              valid;
+   string            text;
+   uint              width;
+   uint              height;
+  };
+
+struct HandleTextFitCacheEntry
+  {
+   bool              valid;
+   string            text;
+   int               avail_w;
+   string            fitted_text;
+   uint              width;
+   uint              height;
+  };
+
 //+------------------------------------------------------------------+
 //|  ██  VARIÁVEIS GLOBAIS                                           |
 //+------------------------------------------------------------------+
@@ -398,6 +421,8 @@ void    QueueUiOrderSelection(const TradePanelAction action);
 void    ProcessUiDispatch();
 void    SyncUiInteractionState();
 bool    ShouldPauseUiHeavyRefresh();
+void    RequestChartRedraw();
+void    FlushPendingChartRedraw();
 void    TrackUiInteractionEvent(const int id,
            const long &lparam,
            const double &dparam,
@@ -582,6 +607,12 @@ bool             g_status_sticky      = false;
 bool             g_preview_snapshot_ready = false;
 bool             g_preview_dirty      = true;
 double           g_preview_market_entry_key = 0.0;
+bool             g_chart_redraw_pending = false;
+HandleTextMeasureCacheEntry g_handle_text_measure_cache[HANDLE_TEXT_MEASURE_CACHE_SIZE];
+HandleTextFitCacheEntry     g_handle_text_fit_cache[HANDLE_TEXT_FIT_CACHE_SIZE];
+int              g_handle_text_measure_cache_next = 0;
+int              g_handle_text_fit_cache_next     = 0;
+bool             g_handle_text_font_ready         = false;
 
 // ── Panel drag performance tracking ─────────────────────────────────
 //  During panel drag, UpdatePreview and heavy processing are suppressed.
@@ -616,6 +647,7 @@ int OnInit()
   {
    g_ui.Reset();
    g_ui_interaction_active = false;
+   g_chart_redraw_pending = false;
    g_trade.SetExpertMagicNumber(InpMagicNumber);
    g_trade.SetDeviationInPoints(InpDeviationPoints);
    g_trade.SetTypeFillingBySymbol(_Symbol);
@@ -637,7 +669,7 @@ int OnInit()
       UpdatePreview();
       EventSetTimer(1);
       ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
-      ChartRedraw(0);
+      FlushPendingChartRedraw();
       return INIT_SUCCEEDED;
      }
 
@@ -675,7 +707,7 @@ int OnInit()
 
    EventSetTimer(1);
    ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
-   ChartRedraw(0);
+   FlushPendingChartRedraw();
    return INIT_SUCCEEDED;
   }
 
@@ -709,7 +741,8 @@ void OnDeinit(const int reason)
    EraseAllManagedTradeMarkers();
    g_panel.Destroy(reason);
    DeleteByPrefix();
-   ChartRedraw(0);
+   RequestChartRedraw();
+   FlushPendingChartRedraw();
   }
 
 //+------------------------------------------------------------------+
@@ -738,6 +771,8 @@ void OnTick()
    // ── 4. Atualizar markers visuais de posição aberta ───────────────
    if(!ShouldPauseUiHeavyRefresh())
       RefreshAllManagedTradeMarkers();
+
+   FlushPendingChartRedraw();
   }
 
 void OnTimer()
@@ -745,6 +780,8 @@ void OnTimer()
    // Skip while the user is actively interacting with the panel.
    if(!ShouldPauseUiHeavyRefresh() && ShouldRefreshPreviewOnPulse())
       UpdatePreview();
+
+   FlushPendingChartRedraw();
   }
 
 //+------------------------------------------------------------------+
@@ -778,6 +815,7 @@ void OnChartEvent(const int id,
          if(!RefreshManagedTradeMarkersGeometryOnly())
             RefreshAllManagedTradeMarkers();
         }
+      FlushPendingChartRedraw();
       return;
      }
 
@@ -785,6 +823,7 @@ void OnChartEvent(const int id,
    if(id == CHARTEVENT_OBJECT_DRAG)
      {
       HandleNativeLineDrag(sparam);
+      FlushPendingChartRedraw();
       return;
      }
 
@@ -795,8 +834,9 @@ void OnChartEvent(const int id,
          StringFind(sparam, "_line") != -1)
         {
          ObjectSetInteger(0, sparam, OBJPROP_SELECTED, false);
-         ChartRedraw(0);
+         RequestChartRedraw();
         }
+      FlushPendingChartRedraw();
       return;
      }
 
@@ -804,6 +844,7 @@ void OnChartEvent(const int id,
      {
       bool btn_down = ((StringToInteger(sparam) & 1) != 0);
       HandleMouseMoveDrag(lparam, dparam, btn_down);
+      FlushPendingChartRedraw();
       return;
      }
   }

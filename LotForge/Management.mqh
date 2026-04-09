@@ -552,10 +552,8 @@ bool BuildOpenTradeMarkerLayout(const string text,
 
    ExpandOverlayBarToFitText(bar_x, bar_w, text);
    int avail_w = MathMax(10, bar_w - 2 * OVL_PAD_X);
-   fitted_text = FitHandleLabelText(text, avail_w);
-
    uint tw = 0, th = 0;
-   MeasureHandleLabelText(fitted_text == "" ? " " : fitted_text, tw, th);
+   FitHandleLabelText(text, avail_w, fitted_text, tw, th);
 
    txt_x_pos = bar_x + OVL_PAD_X;
    txt_y_pos = box_y + MathMax(1, (OVL_BAR_H - (int)th) / 2 - 1);
@@ -609,7 +607,6 @@ bool UpdateOpenTradeMarkerGeometryOnly(const string obj_id,
    ObjectSetInteger(0, bg_n, OBJPROP_YSIZE,     box_h);
    ObjectSetString(0,  bg_n, OBJPROP_TOOLTIP,   full_text);
 
-   ApplyHandleLabelFont(txt_n);
    ObjectSetInteger(0, txt_n, OBJPROP_XDISTANCE, txt_x_pos);
    ObjectSetInteger(0, txt_n, OBJPROP_YDISTANCE, txt_y_pos);
    ObjectSetString(0,  txt_n, OBJPROP_TEXT,      fitted_text);
@@ -666,8 +663,8 @@ void UpdateOpenTradeMarker(const string obj_id,
       ObjectSetInteger(0, txt_n, OBJPROP_BACK,       false);
       ObjectSetInteger(0, txt_n, OBJPROP_CORNER,     CORNER_LEFT_UPPER);
       ObjectSetInteger(0, txt_n, OBJPROP_ANCHOR,     ANCHOR_LEFT_UPPER);
+      ApplyHandleLabelFont(txt_n);
      }
-   ApplyHandleLabelFont(txt_n);
    ObjectSetInteger(0, txt_n, OBJPROP_XDISTANCE, txt_x_pos);
    ObjectSetInteger(0, txt_n, OBJPROP_YDISTANCE, txt_y_pos);
    ObjectSetString(0,  txt_n, OBJPROP_TEXT,      fitted_text);

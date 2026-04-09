@@ -288,11 +288,30 @@ bool HandlePanelEdgeGrabDrag(const int mx, const int my, const bool btn_down)
 //|  When space is tight, we trim the text, not the font.            |
 //+------------------------------------------------------------------+
 
+void EnsureHandleLabelMeasureFont()
+  {
+   if(g_handle_text_font_ready)
+      return;
+   TextSetFont("Arial Bold", -110);
+   g_handle_text_font_ready = true;
+  }
+
 void MeasureHandleLabelText(const string text, uint &tw, uint &th)
   {
+   for(int i = 0; i < HANDLE_TEXT_MEASURE_CACHE_SIZE; i++)
+     {
+      if(g_handle_text_measure_cache[i].valid &&
+         g_handle_text_measure_cache[i].text == text)
+        {
+         tw = g_handle_text_measure_cache[i].width;
+         th = g_handle_text_measure_cache[i].height;
+         return;
+        }
+     }
+
    tw = 0;
    th = 0;
-   TextSetFont("Arial Bold", -110);
+   EnsureHandleLabelMeasureFont();
    TextGetSize(text, tw, th);
 
    if(tw == 0 || th == 0)
@@ -300,31 +319,72 @@ void MeasureHandleLabelText(const string text, uint &tw, uint &th)
       tw = (uint)(StringLen(text) * OVL_FALLBACK_CHAR_W);
       th = (uint)OVL_FALLBACK_H;
      }
+
+   int slot = g_handle_text_measure_cache_next;
+   g_handle_text_measure_cache[slot].valid  = true;
+   g_handle_text_measure_cache[slot].text   = text;
+   g_handle_text_measure_cache[slot].width  = tw;
+   g_handle_text_measure_cache[slot].height = th;
+   g_handle_text_measure_cache_next++;
+   if(g_handle_text_measure_cache_next >= HANDLE_TEXT_MEASURE_CACHE_SIZE)
+      g_handle_text_measure_cache_next = 0;
   }
 
-string FitHandleLabelText(const string text, const int avail_w)
+void FitHandleLabelText(const string text, const int avail_w,
+                        string &fitted_text, uint &tw, uint &th)
   {
-   uint tw = 0, th = 0;
-   MeasureHandleLabelText(text, tw, th);
-   if((int)tw <= avail_w)
-      return text;
-
-   string suffix = "...";
-   MeasureHandleLabelText(suffix, tw, th);
-   if((int)tw > avail_w)
-      return "";
-
-   int len = StringLen(text);
-   while(len > 0)
+   for(int i = 0; i < HANDLE_TEXT_FIT_CACHE_SIZE; i++)
      {
-      string clipped = StringSubstr(text, 0, len) + suffix;
-      MeasureHandleLabelText(clipped, tw, th);
-      if((int)tw <= avail_w)
-         return clipped;
-      len--;
+      if(g_handle_text_fit_cache[i].valid &&
+         g_handle_text_fit_cache[i].avail_w == avail_w &&
+         g_handle_text_fit_cache[i].text == text)
+        {
+         fitted_text = g_handle_text_fit_cache[i].fitted_text;
+         tw          = g_handle_text_fit_cache[i].width;
+         th          = g_handle_text_fit_cache[i].height;
+         return;
+        }
      }
 
-   return suffix;
+   MeasureHandleLabelText(text, tw, th);
+   if((int)tw <= avail_w)
+      fitted_text = text;
+   else
+     {
+      string suffix = "...";
+      MeasureHandleLabelText(suffix, tw, th);
+      if((int)tw > avail_w)
+         fitted_text = "";
+      else
+        {
+         int len = StringLen(text);
+         fitted_text = suffix;
+         while(len > 0)
+           {
+            string clipped = StringSubstr(text, 0, len) + suffix;
+            MeasureHandleLabelText(clipped, tw, th);
+            if((int)tw <= avail_w)
+              {
+               fitted_text = clipped;
+               break;
+              }
+            len--;
+           }
+        }
+     }
+
+   MeasureHandleLabelText(fitted_text == "" ? " " : fitted_text, tw, th);
+
+   int slot = g_handle_text_fit_cache_next;
+   g_handle_text_fit_cache[slot].valid       = true;
+   g_handle_text_fit_cache[slot].text        = text;
+   g_handle_text_fit_cache[slot].avail_w     = avail_w;
+   g_handle_text_fit_cache[slot].fitted_text = fitted_text;
+   g_handle_text_fit_cache[slot].width       = tw;
+   g_handle_text_fit_cache[slot].height      = th;
+   g_handle_text_fit_cache_next++;
+   if(g_handle_text_fit_cache_next >= HANDLE_TEXT_FIT_CACHE_SIZE)
+      g_handle_text_fit_cache_next = 0;
   }
 
 void ApplyHandleLabelFont(const string obj_name)
@@ -478,10 +538,9 @@ void UpdateOverlayPreviewLabel(const string kind,
    bool txt_exists = (ObjectFind(0, txt_n) >= 0);
    ExpandOverlayBarToFitText(bar_x, bar_w, text);
    int avail_w  = MathMax(10, bar_w - 2 * OVL_PAD_X);
-   string fitted_text = FitHandleLabelText(text, avail_w);
-
+   string fitted_text;
    uint tw = 0, th = 0;
-   MeasureHandleLabelText(fitted_text == "" ? " " : fitted_text, tw, th);
+   FitHandleLabelText(text, avail_w, fitted_text, tw, th);
 
    int txt_x = bar_x + OVL_PAD_X;
    int txt_y = box_y + MathMax(1, (OVL_BAR_H - (int)th) / 2 - 1);
@@ -512,8 +571,8 @@ void UpdateOverlayPreviewLabel(const string kind,
       ObjectSetInteger(0, txt_n, OBJPROP_BACK,       false);
       ObjectSetInteger(0, txt_n, OBJPROP_CORNER,     CORNER_LEFT_UPPER);
       ObjectSetInteger(0, txt_n, OBJPROP_ANCHOR,     ANCHOR_LEFT_UPPER);
+      ApplyHandleLabelFont(txt_n);
      }
-   ApplyHandleLabelFont(txt_n);
    ObjectSetInteger(0, txt_n, OBJPROP_XDISTANCE, txt_x);
    ObjectSetInteger(0, txt_n, OBJPROP_YDISTANCE, txt_y);
    ObjectSetString(0,  txt_n, OBJPROP_TEXT,      fitted_text);
@@ -704,7 +763,7 @@ void RenderPreviewFromSnapshot(const PreviewSnapshot &snapshot,
    UpdatePreviewZonesFromSnapshot(snapshot, t1, t2);
 
    if(do_redraw)
-      ChartRedraw(0);
+      RequestChartRedraw();
   }
 
 void ForcePreviewLinesFlat()

@@ -264,6 +264,19 @@ void RestoreChartScroll()
    g_scroll_suppressed = false;
   }
 
+void RequestChartRedraw()
+  {
+   g_chart_redraw_pending = true;
+  }
+
+void FlushPendingChartRedraw()
+  {
+   if(!g_chart_redraw_pending)
+      return;
+   ChartRedraw(0);
+   g_chart_redraw_pending = false;
+  }
+
 void ResetDragState()
   {
    g_drag_phase     = DRAG_IDLE;
@@ -278,6 +291,7 @@ void ResetDragState()
    g_panel_edge_press_y           = 0;
    g_panel_edge_origin_x          = 0;
    g_panel_edge_origin_y          = 0;
+   g_chart_redraw_pending         = false;
    RestoreChartScroll();
   }
 
