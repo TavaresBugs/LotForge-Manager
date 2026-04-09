@@ -57,7 +57,8 @@ bool PreviewLinePriceMoved(const string kind, const double expected_price)
 
 void RefreshNativePreviewLineDragState(const bool btn_down)
   {
-   if(!btn_down || g_state.action == ACTION_NONE || !InpShowPreview)
+   if(!btn_down || g_state.action == ACTION_NONE || !InpShowPreview ||
+      g_panel_dragging || g_panel_manual_dragging)
      {
       g_native_preview_line_dragging = false;
       g_native_preview_line_kind     = "";
@@ -211,6 +212,38 @@ bool IsMouseInPanelEdgeGrabBand(const int mouse_x, const int mouse_y)
    return (left_band || right_band || bottom_band);
   }
 
+bool TryGetPanelCaptionRect(int &x1, int &y1, int &x2, int &y2)
+  {
+   string caption_name = g_panel.Name() + "Caption";
+   if(caption_name == "" || ObjectFind(0, caption_name) < 0)
+      return false;
+
+   int cap_x = (int)ObjectGetInteger(0, caption_name, OBJPROP_XDISTANCE);
+   int cap_y = (int)ObjectGetInteger(0, caption_name, OBJPROP_YDISTANCE);
+   int cap_w = (int)ObjectGetInteger(0, caption_name, OBJPROP_XSIZE);
+   int cap_h = (int)ObjectGetInteger(0, caption_name, OBJPROP_YSIZE);
+   if(cap_w <= 0 || cap_h <= 0)
+      return false;
+
+   x1 = cap_x;
+   y1 = cap_y;
+   x2 = cap_x + cap_w;
+   y2 = cap_y + cap_h;
+   return true;
+  }
+
+bool IsMouseInPanelCaptionGrabBand(const int mouse_x, const int mouse_y)
+  {
+   int x1, y1, x2, y2;
+   if(!TryGetPanelCaptionRect(x1, y1, x2, y2))
+      return false;
+
+   return (mouse_x >= x1 &&
+           mouse_x <= x2 &&
+           mouse_y >= y1 &&
+           mouse_y <= y2);
+  }
+
 void ClampPanelPositionToChart(int &x, int &y)
   {
    int chart_w = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
@@ -253,7 +286,8 @@ bool HandlePanelEdgeGrabDrag(const int mx, const int my, const bool btn_down)
 
    if(!g_panel_manual_dragging && !g_panel_edge_drag_candidate)
      {
-      if(!IsMouseInPanelEdgeGrabBand(mx, my))
+      if(!IsMouseInPanelEdgeGrabBand(mx, my) &&
+         !IsMouseInPanelCaptionGrabBand(mx, my))
          return false;
 
       g_panel_edge_drag_candidate = true;
@@ -1283,6 +1317,12 @@ void HandleMouseMoveDrag(const long   mouse_x_l,
    UpdatePanelScrollCapture(mx, my);
 
    if(HandlePanelEdgeGrabDrag(mx, my, btn_down))
+     {
+      UpdatePanelScrollCapture(mx, my);
+      return;
+     }
+
+   if(g_panel_dragging)
      {
       UpdatePanelScrollCapture(mx, my);
       return;

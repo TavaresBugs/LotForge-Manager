@@ -573,6 +573,8 @@ bool CLotForgePanel::OnDialogDragEnd(void)
    RememberPanelState();
    if(g_state.action != ACTION_NONE)
       UpdatePreviewGeometryOnly();
+   if(!RefreshManagedTradeMarkersGeometryOnly())
+      RefreshAllManagedTradeMarkers();
    return handled;
   }
 
