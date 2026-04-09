@@ -146,6 +146,7 @@ const int    COMMENT_BOX_H         = 22;
 
 const int    DRAG_THRESHOLD_PX     = 4;
 const int    LINE_HIT_TOL_PX       = 9;
+const int    PANEL_PROXIMITY_PX    = 16;
 
 const double ENTRY_BAND_HALF_PTS   = 3.0;
 
@@ -317,6 +318,32 @@ struct UiDispatchState
      }
   };
 
+struct PreviewSnapshot
+  {
+   bool              visible;
+   TradePanelAction  action;
+   bool              is_buy;
+   double            entry_price;
+   double            sl_price;
+   double            tp_price;
+   bool              plan_valid;
+   double            plan_lots;
+   double            risk_money;
+   double            reward_money;
+   double            risk_pct;
+   double            reward_pct;
+   string            effective_label;
+   string            short_label;
+   string            entry_line_tooltip;
+   string            sl_line_tooltip;
+   string            tp_line_tooltip;
+   string            en_label;
+   string            sl_label;
+   string            tp_label;
+
+   void              Clear();
+  };
+
 //+------------------------------------------------------------------+
 //|  ██  VARIÁVEIS GLOBAIS                                           |
 //+------------------------------------------------------------------+
@@ -385,6 +412,8 @@ void    ProcessUiToggleAlgoTrading();
 void    DeletePreviewObjects();
 void    DeleteByPrefix();
 void    UpdatePreview(const bool do_redraw = true);
+void    UpdatePreviewGeometryOnly(const bool do_redraw = true);
+void    InvalidatePreviewSnapshot();
 void    SuppressChartScroll();
 void    RestoreChartScroll();
 void    ResetDragState();
@@ -392,6 +421,7 @@ string  DetectOverlayBarHit(const int mx, const int my);
 void    HandleNativeLineDrag(const string obj_name);
 void    ApplyLineDrag(const int mx, const int my);
 void    HandleMouseMoveDrag(const long mouse_x, const double mouse_y_d, const bool btn_down);
+bool    HandlePanelEdgeGrabDrag(const int mx, const int my, const bool btn_down);
 void    SaveStateForChartChange();
 bool    RestoreStateFromChartChange();
 double  CalcSmartInitDistance();
@@ -408,6 +438,7 @@ void    UpdateOpenTradeMarker(const string obj_id, const string text,
 void    UpdateManagedTradeMarkers(const ulong ticket);
 void    EraseManagedTradeMarkers(const ulong ticket);
 void    EraseAllManagedTradeMarkers();
+void    RefreshAllManagedTradeMarkers();
 
 //+------------------------------------------------------------------+
 //|  ██  CLotForgePanel — CAppDialog-based managed panel             |
@@ -475,6 +506,7 @@ public:
    void           RefreshBETrailingButtons(void);
    void           ApplyActionStyle(CButton &btn, const color base_clr, const bool selected);
    bool           IsMouseOverPanel(const int mx, const int my);
+   bool           IsMouseNearPanel(const int mx, const int my);
 
    // ── Protected-access wrapper ────────────────────────────────────
    // CAppDialog::Minimize() is protected; this thin public forwarder lets
@@ -529,6 +561,7 @@ public:
 
 PanelState       g_state;
 TradeParams      g_trade_plan;
+PreviewSnapshot  g_preview_snapshot;
 UiDispatchState  g_ui;
 CTrade           g_trade;
 CLotForgePanel   g_panel;
@@ -543,11 +576,18 @@ string           g_native_preview_line_kind     = "";
 bool             g_scroll_was_enabled = true;
 bool             g_scroll_suppressed  = false;
 bool             g_status_sticky      = false;
+bool             g_preview_snapshot_ready = false;
 
 // ── Panel drag performance tracking ─────────────────────────────────
 //  During panel drag, UpdatePreview and heavy processing are suppressed.
 //  This state is now driven by the native CDialog drag hooks.
 bool             g_panel_dragging     = false;
+bool             g_panel_manual_dragging = false;
+bool             g_panel_edge_drag_candidate = false;
+int              g_panel_edge_press_x = 0;
+int              g_panel_edge_press_y = 0;
+int              g_panel_edge_origin_x = 0;
+int              g_panel_edge_origin_y = 0;
 bool             g_ui_interaction_active = false;
 
 // ── Gestão de posição por ticket ──────────────────────────────────
@@ -726,10 +766,10 @@ void OnChartEvent(const int id,
    if(id == CHARTEVENT_CHART_CHANGE)
      {
       // During panel drag, the chart fires CHART_CHANGE frequently as
-      // the panel overlay moves — skip heavy preview rebuild.
+      // the panel overlay moves — do a geometry-only refresh.
       if(!ShouldPauseUiHeavyRefresh())
         {
-         UpdatePreview();
+         UpdatePreviewGeometryOnly();
          RefreshAllManagedTradeMarkers();
         }
       return;

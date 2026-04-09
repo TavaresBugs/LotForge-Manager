@@ -11,6 +11,30 @@ void TradeParams::Clear()
 
 bool TradeParams::IsValid() const { return (entry_price > 0.0 && lots > 0.0); }
 
+void PreviewSnapshot::Clear()
+  {
+   visible            = false;
+   action             = ACTION_NONE;
+   is_buy             = false;
+   entry_price        = 0.0;
+   sl_price           = 0.0;
+   tp_price           = 0.0;
+   plan_valid         = false;
+   plan_lots          = 0.0;
+   risk_money         = 0.0;
+   reward_money       = 0.0;
+   risk_pct           = 0.0;
+   reward_pct         = 0.0;
+   effective_label    = "";
+   short_label        = "";
+   entry_line_tooltip = "";
+   sl_line_tooltip    = "";
+   tp_line_tooltip    = "";
+   en_label           = "";
+   sl_label           = "";
+   tp_label           = "";
+  }
+
 void PanelState::Init()
   {
    panel_x     = InpPanelX;

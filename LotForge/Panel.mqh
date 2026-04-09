@@ -428,6 +428,15 @@ bool CLotForgePanel::IsMouseOverPanel(const int mx, const int my)
    return (mx >= x1 && mx <= x2 && my >= y1 && my <= y2);
   }
 
+bool CLotForgePanel::IsMouseNearPanel(const int mx, const int my)
+  {
+   int x1 = (int)Left()   - PANEL_PROXIMITY_PX;
+   int y1 = (int)Top()    - PANEL_PROXIMITY_PX;
+   int x2 = (int)Right()  + PANEL_PROXIMITY_PX;
+   int y2 = (int)Bottom() + PANEL_PROXIMITY_PX;
+   return (mx >= x1 && mx <= x2 && my >= y1 && my <= y2);
+  }
+
 void CLotForgePanel::BeginActiveEdit(const CompactEditTarget target)
   {
    g_state.edit_in_progress = (target != EDIT_TARGET_NONE);
@@ -472,7 +481,9 @@ CompactEditTarget CLotForgePanel::ResolveEditTarget(const string obj_name)
 
 void SyncUiInteractionState()
   {
-   g_ui_interaction_active = (g_panel_dragging || g_state.edit_in_progress);
+   g_ui_interaction_active = (g_panel_dragging ||
+                              g_panel_manual_dragging ||
+                              g_state.edit_in_progress);
   }
 
 bool ShouldPauseUiHeavyRefresh()
@@ -561,7 +572,7 @@ bool CLotForgePanel::OnDialogDragEnd(void)
    SyncUiInteractionState();
    RememberPanelState();
    if(g_state.action != ACTION_NONE)
-      UpdatePreview();
+      UpdatePreviewGeometryOnly();
    return handled;
   }
 

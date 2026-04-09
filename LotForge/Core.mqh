@@ -272,12 +272,24 @@ void ResetDragState()
    g_drag_press_y   = 0;
    g_native_preview_line_dragging = false;
    g_native_preview_line_kind     = "";
+   g_panel_manual_dragging        = false;
+   g_panel_edge_drag_candidate    = false;
+   g_panel_edge_press_x           = 0;
+   g_panel_edge_press_y           = 0;
+   g_panel_edge_origin_x          = 0;
+   g_panel_edge_origin_y          = 0;
    RestoreChartScroll();
   }
 
 //+------------------------------------------------------------------+
 //|  DeletePreviewObjects / DeleteByPrefix                           |
 //+------------------------------------------------------------------+
+
+void InvalidatePreviewSnapshot()
+  {
+   g_preview_snapshot.Clear();
+   g_preview_snapshot_ready = false;
+  }
 
 void DeletePreviewObjects()
   {
@@ -287,6 +299,7 @@ void DeletePreviewObjects()
       if(StringFind(n, PREV_PFX) == 0)
          ObjectDelete(0, n);
      }
+   InvalidatePreviewSnapshot();
    ResetDragState();
   }
 
