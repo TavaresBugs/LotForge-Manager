@@ -289,6 +289,36 @@ void InvalidatePreviewSnapshot()
   {
    g_preview_snapshot.Clear();
    g_preview_snapshot_ready = false;
+   g_preview_dirty          = false;
+   g_preview_market_entry_key = 0.0;
+  }
+
+void MarkPreviewDirty()
+  {
+   g_preview_dirty = true;
+  }
+
+bool ShouldRefreshPreviewOnPulse()
+  {
+   if(g_state.action == ACTION_NONE || !InpShowPreview)
+      return false;
+
+   if(g_preview_dirty ||
+      !g_preview_snapshot_ready ||
+      !g_preview_snapshot.visible ||
+      g_preview_snapshot.action != g_state.action)
+      return true;
+
+   if(!IsMarketAction(g_state.action))
+      return false;
+
+   double entry_price = EffectiveStateEntryPrice(g_state.action);
+   if(entry_price <= 0.0)
+      return false;
+
+   double entry_key = NormalizePriceValue(entry_price);
+   return (g_preview_market_entry_key <= 0.0 ||
+           entry_key != g_preview_market_entry_key);
   }
 
 void DeletePreviewObjects()

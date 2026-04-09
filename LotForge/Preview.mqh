@@ -238,7 +238,8 @@ bool HandlePanelEdgeGrabDrag(const int mx, const int my, const bool btn_down)
       g_panel.RememberPanelState();
       if(g_state.action != ACTION_NONE)
          UpdatePreviewGeometryOnly();
-      RefreshAllManagedTradeMarkers();
+      if(!RefreshManagedTradeMarkersGeometryOnly())
+         RefreshAllManagedTradeMarkers();
       return true;
      }
 
@@ -340,19 +341,6 @@ void ExpandOverlayBarToFitText(int &bar_x, int &bar_w, const string text)
    int required_w = (int)tw + 2 * OVL_PAD_X + 2;
    if(required_w > bar_w)
       bar_w = required_w;
-
-   int chart_w = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
-   if(chart_w <= 0)
-      return;
-
-   int max_w = MathMax(20, chart_w - 4);
-   if(bar_w > max_w)
-      bar_w = max_w;
-
-   if(bar_x + bar_w > chart_w - 2)
-      bar_x = chart_w - 2 - bar_w;
-   if(bar_x < 0)
-      bar_x = 0;
   }
 
 //+------------------------------------------------------------------+
@@ -754,9 +742,7 @@ void UpdatePreviewGeometryOnly(const bool do_redraw)
       return;
      }
 
-   if(!g_preview_snapshot_ready ||
-      !g_preview_snapshot.visible ||
-      g_preview_snapshot.action != g_state.action)
+   if(ShouldRefreshPreviewOnPulse())
      {
       UpdatePreview(do_redraw);
       return;
@@ -776,6 +762,10 @@ void UpdatePreview(const bool do_redraw)
 
    g_preview_snapshot       = snapshot;
    g_preview_snapshot_ready = true;
+   g_preview_dirty          = false;
+   g_preview_market_entry_key = IsMarketAction(snapshot.action)
+                                ? NormalizePriceValue(snapshot.entry_price)
+                                : 0.0;
 
    RenderPreviewFromSnapshot(snapshot, do_redraw);
 
@@ -850,15 +840,20 @@ string DetectOverlayBarHit(const int mx, const int my)
    return "";
   }
 
-void ApplyLineDrag(const int mx, const int my)
+bool ApplyLineDrag(const int mx, const int my)
   {
    bool is_buy    = IsBuyAction(g_state.action);
    bool is_market = IsMarketAction(g_state.action);
+   double old_entry_price     = g_state.entry_price;
+   double old_sl_points       = g_state.sl_points;
+   double old_tp_points       = g_state.tp_points;
+   double old_market_sl_price = g_state.market_sl_price;
+   double old_market_tp_price = g_state.market_tp_price;
    int      subwin;
    datetime t_dummy;
    double   new_price;
-   if(!ChartXYToTimePrice(0, mx, my, subwin, t_dummy, new_price)) return;
-   if(new_price <= 0.0) return;
+   if(!ChartXYToTimePrice(0, mx, my, subwin, t_dummy, new_price)) return false;
+   if(new_price <= 0.0) return false;
 
    double tick_sz = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    new_price = (tick_sz > 0.0)
@@ -919,6 +914,11 @@ void ApplyLineDrag(const int mx, const int my)
             g_state.market_tp_price = new_price;
         }
      }
+   return (g_state.entry_price      != old_entry_price     ||
+           g_state.sl_points        != old_sl_points       ||
+           g_state.tp_points        != old_tp_points       ||
+           g_state.market_sl_price  != old_market_sl_price ||
+           g_state.market_tp_price  != old_market_tp_price);
   }
 
 //+------------------------------------------------------------------+
@@ -1056,7 +1056,6 @@ void HandleMouseMoveDrag(const long   mouse_x_l,
         {
          g_drag_phase     = DRAG_IDLE;
          g_drag_line_kind = "";
-         if(g_state.action != ACTION_NONE) UpdatePreview();
         }
       else if(g_drag_phase == DRAG_CANDIDATE)
         {
@@ -1101,9 +1100,11 @@ void HandleMouseMoveDrag(const long   mouse_x_l,
 
    if(g_drag_phase == DRAG_ACTIVE_LINE)
      {
-      ApplyLineDrag(mx, my);
-      g_panel.RefreshValues();
-      UpdatePreview();
+      if(ApplyLineDrag(mx, my))
+        {
+         g_panel.RefreshValues();
+         UpdatePreview();
+        }
       return;
      }
   }

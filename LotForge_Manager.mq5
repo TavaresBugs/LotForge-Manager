@@ -414,12 +414,14 @@ void    DeleteByPrefix();
 void    UpdatePreview(const bool do_redraw = true);
 void    UpdatePreviewGeometryOnly(const bool do_redraw = true);
 void    InvalidatePreviewSnapshot();
+void    MarkPreviewDirty();
+bool    ShouldRefreshPreviewOnPulse();
 void    SuppressChartScroll();
 void    RestoreChartScroll();
 void    ResetDragState();
 string  DetectOverlayBarHit(const int mx, const int my);
 void    HandleNativeLineDrag(const string obj_name);
-void    ApplyLineDrag(const int mx, const int my);
+bool    ApplyLineDrag(const int mx, const int my);
 void    HandleMouseMoveDrag(const long mouse_x, const double mouse_y_d, const bool btn_down);
 bool    HandlePanelEdgeGrabDrag(const int mx, const int my, const bool btn_down);
 void    SaveStateForChartChange();
@@ -435,6 +437,7 @@ void    UpdateOverlayPreviewLabel(const string kind, const string text,
 void    UpdateOpenTradeMarker(const string obj_id, const string text,
            const double price, const bool above_line,
            const color bg_clr, const color border_clr, const color txt_clr);
+bool    RefreshManagedTradeMarkersGeometryOnly();
 void    UpdateManagedTradeMarkers(const ulong ticket);
 void    EraseManagedTradeMarkers(const ulong ticket);
 void    EraseAllManagedTradeMarkers();
@@ -577,6 +580,8 @@ bool             g_scroll_was_enabled = true;
 bool             g_scroll_suppressed  = false;
 bool             g_status_sticky      = false;
 bool             g_preview_snapshot_ready = false;
+bool             g_preview_dirty      = true;
+double           g_preview_market_entry_key = 0.0;
 
 // ── Panel drag performance tracking ─────────────────────────────────
 //  During panel drag, UpdatePreview and heavy processing are suppressed.
@@ -715,7 +720,7 @@ void OnTick()
   {
    // ── 1. Preview update ─────────────────────────────────────────────
    //  Skip while the user is actively interacting with the panel.
-   if(g_state.action != ACTION_NONE && !ShouldPauseUiHeavyRefresh())
+   if(!ShouldPauseUiHeavyRefresh() && ShouldRefreshPreviewOnPulse())
       UpdatePreview();
 
    // ── 2. Sincronizar estado das posições abertas ───────────────────
@@ -738,7 +743,7 @@ void OnTick()
 void OnTimer()
   {
    // Skip while the user is actively interacting with the panel.
-   if(g_state.action != ACTION_NONE && !ShouldPauseUiHeavyRefresh())
+   if(!ShouldPauseUiHeavyRefresh() && ShouldRefreshPreviewOnPulse())
       UpdatePreview();
   }
 
@@ -770,7 +775,8 @@ void OnChartEvent(const int id,
       if(!ShouldPauseUiHeavyRefresh())
         {
          UpdatePreviewGeometryOnly();
-         RefreshAllManagedTradeMarkers();
+         if(!RefreshManagedTradeMarkersGeometryOnly())
+            RefreshAllManagedTradeMarkers();
         }
       return;
      }

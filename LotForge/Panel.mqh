@@ -722,6 +722,7 @@ void CLotForgePanel::OnClickSend(void)
    if(IsMarketAction(g_state.action) &&
       (g_state.editing_object == EDIT_TARGET_TP || g_state.editing_object == EDIT_TARGET_SL))
       ArmMarketPriceTargetsFromCurrentPoints();
+   MarkPreviewDirty();
    g_ui.refresh_values = true;
    QueueUiCommand(UI_CMD_SEND);
   }
@@ -831,7 +832,11 @@ void QueueUiRefresh(const bool refresh_values,
       g_panel.EndActiveEdit();
 
    if(refresh_values)  g_ui.refresh_values = true;
-   if(refresh_preview) g_ui.refresh_preview = true;
+   if(refresh_preview)
+     {
+      MarkPreviewDirty();
+      g_ui.refresh_preview = true;
+     }
    if(redraw)          g_ui.redraw = true;
   }
 
@@ -849,6 +854,7 @@ void QueueUiOrderSelection(const TradePanelAction action)
    if(g_state.edit_in_progress)
       g_panel.EndActiveEdit();
 
+   MarkPreviewDirty();
    g_ui.has_order_selection    = true;
    g_ui.selected_action        = action;
    g_ui.refresh_action_buttons = true;
