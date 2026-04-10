@@ -94,18 +94,20 @@ void EnsurePreviewLine(const string kind,
       if(!ObjectCreate(0, name, OBJ_HLINE, 0, TimeCurrent(), price)) return;
       ObjectSetInteger(0, name, OBJPROP_HIDDEN,     false);
       ObjectSetInteger(0, name, OBJPROP_SELECTED,   false);
+      ObjectSetInteger(0, name, OBJPROP_BACK,       true);    // static — always behind panel/overlay
+      ObjectSetInteger(0, name, OBJPROP_COLOR,      clr);     // static per kind (CLR_ENTRY/SL/TP_LINE)
+      ObjectSetInteger(0, name, OBJPROP_STYLE,      line_style); // always STYLE_DOT
+      ObjectSetInteger(0, name, OBJPROP_WIDTH,      line_width); // always 1
      }
-   ObjectSetInteger(0, name, OBJPROP_BACK,       true);   // behave like chart guide, behind panel/overlay
    bool selectable = (kind != "entry" || IsPendingAction(g_state.action));
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, selectable);   // native drag via CHARTEVENT_OBJECT_DRAG
    if(!selectable)
       ObjectSetInteger(0, name, OBJPROP_SELECTED, false);
    if(!IsPreviewLineUnderNativeDrag(kind))
       ObjectSetDouble(0,  name, OBJPROP_PRICE, price);
-   ObjectSetInteger(0, name, OBJPROP_COLOR,   clr);
-   ObjectSetInteger(0, name, OBJPROP_STYLE,   line_style);
-   ObjectSetInteger(0, name, OBJPROP_WIDTH,   line_width);
-   ObjectSetString(0,  name, OBJPROP_TOOLTIP, tooltip);
+   // Skip tooltip during active overlay drag — not visible and generates string overhead
+   if(g_drag_phase != DRAG_ACTIVE_LINE)
+      ObjectSetString(0, name, OBJPROP_TOOLTIP, tooltip);
   }
 
 //+------------------------------------------------------------------+
@@ -154,6 +156,22 @@ datetime CurrentPreviewBarRightTime()
    if(bar_right == 0) bar_right = TimeCurrent();
    return bar_right;
   }
+
+// Screen-space X coord cache for overlay labels: avoids redundant ChartTimePriceToXY
+// calls when t1/t2 are stable (e.g. during Y-axis price drag).
+// Index: tp=0, sl=1, en=2
+struct OverlayBarXCache
+  {
+   datetime t1;
+   datetime t2;
+   int      px1;
+   int      px2;
+   bool     valid;
+  };
+OverlayBarXCache g_overlay_bar_x_cache[3];
+
+int OverlayKindToIdx(const string kind)
+  { return (kind == "tp") ? 0 : (kind == "sl") ? 1 : 2; }
 
 //+------------------------------------------------------------------+
 //|  IsMouseOverPanel — delegates to g_panel                         |
@@ -492,12 +510,15 @@ void DrawPreviewZone(const string   kind,
       ObjectSetInteger(0, rect_n, OBJPROP_SELECTED,   false);
       ObjectSetInteger(0, rect_n, OBJPROP_HIDDEN,     false);
      }
-   ObjectSetInteger(0, rect_n, OBJPROP_TIME,  0, t1);
+   // During active overlay drag t1/t2/fill_clr are constant — skip updating them
+   if(g_drag_phase != DRAG_ACTIVE_LINE)
+     {
+      ObjectSetInteger(0, rect_n, OBJPROP_TIME,  0, t1);
+      ObjectSetInteger(0, rect_n, OBJPROP_TIME,  1, t2);
+      ObjectSetInteger(0, rect_n, OBJPROP_COLOR, fill_clr);
+     }
    ObjectSetDouble(0,  rect_n, OBJPROP_PRICE, 0, price_hi);
-   ObjectSetInteger(0, rect_n, OBJPROP_TIME,  1, t2);
    ObjectSetDouble(0,  rect_n, OBJPROP_PRICE, 1, price_lo);
-   // OBJ_RECTANGLE com FILL=true: OBJPROP_COLOR = cor do preenchimento
-   ObjectSetInteger(0, rect_n, OBJPROP_COLOR, fill_clr);
 
    // Chart-space OBJ_TEXT replaced by screen-space overlay labels.
    // UpdateOverlayPreviewLabel() is called from UpdatePreviewZones().
@@ -555,9 +576,31 @@ void UpdateOverlayPreviewLabel(const string kind,
                                const color    txt_clr)
   {
    // ── Convert t1 / t2 to screen X ──────────────────────────────────
+   // px1/px2 (horizontal) depend only on t1/t2, not on price. Cache them to
+   // avoid a second ChartTimePriceToXY call when t1/t2 haven't changed
+   // (common during Y-axis drag where only price moves).
+   int kind_idx = OverlayKindToIdx(kind);
    int px1, px2, py1, py2;
-   if(!ChartTimePriceToXY(0, 0, t1, price, px1, py1)) return;
-   if(!ChartTimePriceToXY(0, 0, t2, price, px2, py2)) return;
+   bool x_cached = (g_overlay_bar_x_cache[kind_idx].valid &&
+                    g_overlay_bar_x_cache[kind_idx].t1 == t1 &&
+                    g_overlay_bar_x_cache[kind_idx].t2 == t2);
+   if(x_cached)
+     {
+      int tmp_px;
+      if(!ChartTimePriceToXY(0, 0, t1, price, tmp_px, py1)) return;
+      px1 = g_overlay_bar_x_cache[kind_idx].px1;
+      px2 = g_overlay_bar_x_cache[kind_idx].px2;
+     }
+   else
+     {
+      if(!ChartTimePriceToXY(0, 0, t1, price, px1, py1)) return;
+      if(!ChartTimePriceToXY(0, 0, t2, price, px2, py2)) return;
+      g_overlay_bar_x_cache[kind_idx].t1    = t1;
+      g_overlay_bar_x_cache[kind_idx].t2    = t2;
+      g_overlay_bar_x_cache[kind_idx].px1   = px1;
+      g_overlay_bar_x_cache[kind_idx].px2   = px2;
+      g_overlay_bar_x_cache[kind_idx].valid = true;
+     }
 
    int bar_x = MathMin(px1, px2) - 2;
    int bar_w = MathAbs(px2 - px1) + 2;
@@ -595,13 +638,14 @@ void UpdateOverlayPreviewLabel(const string kind,
       ObjectSetInteger(0, bg_n, OBJPROP_BACK,         false);
       ObjectSetInteger(0, bg_n, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
       ObjectSetInteger(0, bg_n, OBJPROP_BORDER_TYPE,  BORDER_FLAT);
+      // Static per session — set once at creation
+      ObjectSetInteger(0, bg_n, OBJPROP_BGCOLOR,   bg_clr);
+      ObjectSetInteger(0, bg_n, OBJPROP_COLOR,     border_clr);
      }
    ObjectSetInteger(0, bg_n, OBJPROP_XDISTANCE, bar_x);
    ObjectSetInteger(0, bg_n, OBJPROP_YDISTANCE, box_y);
    ObjectSetInteger(0, bg_n, OBJPROP_XSIZE,     bar_w);
    ObjectSetInteger(0, bg_n, OBJPROP_YSIZE,     box_h);
-   ObjectSetInteger(0, bg_n, OBJPROP_BGCOLOR,   bg_clr);
-   ObjectSetInteger(0, bg_n, OBJPROP_COLOR,     border_clr);
 
    // ── OBJ_LABEL ────────────────────────────────────────────────────
    if(!txt_exists)
@@ -613,11 +657,12 @@ void UpdateOverlayPreviewLabel(const string kind,
       ObjectSetInteger(0, txt_n, OBJPROP_CORNER,     CORNER_LEFT_UPPER);
       ObjectSetInteger(0, txt_n, OBJPROP_ANCHOR,     ANCHOR_LEFT_UPPER);
       ApplyHandleLabelFont(txt_n);
+      // Static per session — set once at creation
+      ObjectSetInteger(0, txt_n, OBJPROP_COLOR,     txt_clr);
      }
    ObjectSetInteger(0, txt_n, OBJPROP_XDISTANCE, txt_x);
    ObjectSetInteger(0, txt_n, OBJPROP_YDISTANCE, txt_y);
    ObjectSetString(0,  txt_n, OBJPROP_TEXT,      fitted_text);
-   ObjectSetInteger(0, txt_n, OBJPROP_COLOR,     txt_clr);
   }
 
 void UpdateOverlayPreviewLabelsFromSnapshot(const PreviewSnapshot &snapshot,
@@ -738,15 +783,22 @@ bool BuildPreviewGeometrySnapshot(PreviewSnapshot &snapshot)
    snapshot.sl_price = EffectiveStateSLPrice(g_state.action, snapshot.entry_price);
    snapshot.tp_price = EffectiveStateTPPrice(g_state.action, snapshot.entry_price);
 
-   snapshot.effective_label    = EffectiveActionLabel(g_state.action, snapshot.entry_price);
-   snapshot.short_label        = ShortPreviewLabel(g_state.action, snapshot.entry_price);
-   snapshot.entry_line_tooltip = snapshot.effective_label + " @ " + FormatPrice(snapshot.entry_price);
-   snapshot.sl_line_tooltip    = (snapshot.sl_price > 0.0)
-                                 ? "SL @ " + FormatPrice(snapshot.sl_price)
-                                 : "";
-   snapshot.tp_line_tooltip    = (snapshot.tp_price > 0.0)
-                                 ? "TP @ " + FormatPrice(snapshot.tp_price)
-                                 : "";
+   // short_label always needed for en_label in ApplyPreviewFinancialStateToSnapshot
+   snapshot.short_label = ShortPreviewLabel(g_state.action, snapshot.entry_price);
+
+   // During overlay drag: tooltips are not rendered and SetStatus is skipped —
+   // skip EffectiveActionLabel (may call DerivePendingSubtype) and tooltip string builds.
+   if(g_drag_phase != DRAG_ACTIVE_LINE)
+     {
+      snapshot.effective_label    = EffectiveActionLabel(g_state.action, snapshot.entry_price);
+      snapshot.entry_line_tooltip = snapshot.effective_label + " @ " + FormatPrice(snapshot.entry_price);
+      snapshot.sl_line_tooltip    = (snapshot.sl_price > 0.0)
+                                    ? "SL @ " + FormatPrice(snapshot.sl_price)
+                                    : "";
+      snapshot.tp_line_tooltip    = (snapshot.tp_price > 0.0)
+                                    ? "TP @ " + FormatPrice(snapshot.tp_price)
+                                    : "";
+     }
 
    snapshot.visible = true;
    return true;
@@ -958,8 +1010,18 @@ void ForcePreviewLinesFlat()
 //|  removidos. O texto agora está DENTRO das zonas (centrado).       |
 //+------------------------------------------------------------------+
 
+void InvalidateOverlayBarXCache()
+  {
+   for(int i = 0; i < 3; i++)
+      g_overlay_bar_x_cache[i].valid = false;
+  }
+
 void UpdatePreviewGeometryOnly(const bool do_redraw)
   {
+   // Chart geometry changed (scroll/zoom): datetime→screenX mapping is now stale.
+   // Invalidate px1/px2 cache so UpdateOverlayPreviewLabel recomputes from scratch.
+   InvalidateOverlayBarXCache();
+
    if(g_state.action == ACTION_NONE || !InpShowPreview)
      {
       DeletePreviewObjects();
@@ -1004,7 +1066,8 @@ void UpdatePreview(const bool do_redraw)
 
    RenderPreviewFromSnapshot(snapshot, do_redraw);
 
-   if(!g_status_sticky && IsPendingAction(g_state.action))
+   // Skip during overlay drag: SetStatus calls Print() (disk write) every mouse move
+   if(!g_status_sticky && IsPendingAction(g_state.action) && g_drag_phase != DRAG_ACTIVE_LINE)
       SetStatus("Ação: " + snapshot.effective_label + ". Configure e clique Send.");
   }
 
