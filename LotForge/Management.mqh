@@ -174,10 +174,18 @@ void EnsureManagedState(const ulong ticket)
    ms.initial_open_price = PositionGetDouble(POSITION_PRICE_OPEN);
    ms.initial_sl         = PositionGetDouble(POSITION_SL);
    ms.initial_tp         = PositionGetDouble(POSITION_TP);
-   ms.initial_risk_points = (ms.initial_sl > 0.0)
+
+   // Se posição já está protegida (SL do lado lucrativo), o EA pode ter sido
+   // recarregado com o BE já aplicado. Risco original é desconhecido — usar
+   // initial_risk_points=0 para forçar InpTrailingDistPts explícito no trailing.
+   // Sem isso, initial_risk_points = |open - sl_be| = poucos pontos → trailing
+   // agressivo imediato após recarregar com Algo ativo.
+   bool already_protected = IsPositionProtected(ticket);
+   ms.be_applied         = already_protected;
+   ms.initial_risk_points = (!already_protected && ms.initial_sl > 0.0)
                             ? MathAbs(ms.initial_open_price - ms.initial_sl) / _Point
                             : 0.0;
-   ms.be_applied         = false;
+
    ms.partial_done       = false;
    ms.trailing_armed     = false;
    ms.algo_managed       = false;
@@ -569,63 +577,21 @@ void RunAutomatedTradeManagement()
 //+------------------------------------------------------------------+
 
 //+------------------------------------------------------------------+
-//|  UpdateOpenTradeMarker — create/update a single floating handle   |
+//|  UpdateOpenTradeMarker — right-edge text label at price level     |
 //|                                                                   |
-//|  Candle-based horizontal geometry — independent of preview.       |
-//|  · Left anchor  = 1 candle behind bar-0 (shift 1)                 |
-//|  · Right anchor = 3 candles ahead of bar-0 into the future        |
-//|  · Both converted to screen X via ChartTimePriceToXY              |
-//|  · Y from price via ChartTimePriceToXY                            |
-//|  · OBJ_RECTANGLE_LABEL + OBJ_LABEL in CORNER_LEFT_UPPER          |
-//|  · No right-edge clamping — natural "eaten by scale" clipping     |
+//|  · OBJ_LABEL with CORNER_RIGHT_UPPER + ANCHOR_RIGHT              |
+//|  · Pinned 5 px from chart right border, Y from price             |
+//|  · No background bar — plain text only                           |
 //+------------------------------------------------------------------+
 
-bool BuildOpenTradeMarkerLayout(const string text,
-                                const double price,
-                                const bool   above_line,
-                                int          &bar_x,
-                                int          &box_y,
-                                int          &bar_w,
-                                int          &box_h,
-                                int          &txt_x_pos,
-                                int          &txt_y_pos,
-                                string       &fitted_text)
+bool GetPriceScreenY(const double price, int &out_y)
   {
    datetime t_bar0 = iTime(_Symbol, PERIOD_CURRENT, 0);
-   datetime t_bar1 = iTime(_Symbol, PERIOD_CURRENT, 1);
-   if(t_bar0 == 0 || t_bar1 == 0)
-      return false;
-
-   int px0, py0, px1, py1_scr;
-   if(!ChartTimePriceToXY(0, 0, t_bar0, price, px0, py0) ||
-      !ChartTimePriceToXY(0, 0, t_bar1, price, px1, py1_scr))
-      return false;
-
-   int candle_px = MathAbs(px0 - px1);
-   if(candle_px < 1) candle_px = 8;
-
-   int span_candles = PreviewCandleCount() + 1;
-   bar_x = px1 - 2;
-   bar_w = candle_px * span_candles + 2;
-   if(bar_w < 1)
-      return false;
-
-   int py = py0;
+   if(t_bar0 == 0) return false;
+   int px;
+   if(!ChartTimePriceToXY(0, 0, t_bar0, price, px, out_y)) return false;
    int chart_h = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
-   if(py < -OVL_BAR_H || py > chart_h + OVL_BAR_H)
-      return false;
-
-   box_h = OVL_BAR_H;
-   box_y = above_line ? (py - OVL_LINE_OFFSET - box_h)
-                      : (py + OVL_LINE_OFFSET);
-
-   ExpandOverlayBarToFitText(bar_x, bar_w, text);
-   int avail_w = MathMax(10, bar_w - 2 * OVL_PAD_X);
-   uint tw = 0, th = 0;
-   FitHandleLabelText(text, avail_w, fitted_text, tw, th);
-
-   txt_x_pos = bar_x + OVL_PAD_X;
-   txt_y_pos = box_y + MathMax(1, (OVL_BAR_H - (int)th) / 2 - 1);
+   if(out_y < -OVL_BAR_H || out_y > chart_h + OVL_BAR_H) return false;
    return true;
   }
 
@@ -649,36 +615,24 @@ bool UpdateOpenTradeMarkerGeometryOnly(const string obj_id,
   {
    string bg_n, txt_n;
    int found_mask = FindManagedTradeMarkerObjects(obj_id, bg_n, txt_n);
-   if(found_mask != 3)
-      return false;
+
+   // Clean up any legacy background bar
+   if((found_mask & 1) != 0) ObjectDelete(0, bg_n);
+   if((found_mask & 2) == 0) return false;
 
    string full_text = ObjectGetString(0, txt_n, OBJPROP_TOOLTIP);
    if(full_text == "")
       full_text = ObjectGetString(0, txt_n, OBJPROP_TEXT);
-   if(full_text == "")
-      return false;
+   if(full_text == "") return false;
 
-   int bar_x, box_y, bar_w, box_h, txt_x_pos, txt_y_pos;
-   string fitted_text;
-   if(!BuildOpenTradeMarkerLayout(full_text, price, above_line,
-                                  bar_x, box_y, bar_w, box_h,
-                                  txt_x_pos, txt_y_pos, fitted_text))
+   int py;
+   if(!GetPriceScreenY(price, py))
      {
-      ObjectDelete(0, bg_n);
       ObjectDelete(0, txt_n);
       return true;
      }
 
-   ObjectSetInteger(0, bg_n, OBJPROP_XDISTANCE, bar_x);
-   ObjectSetInteger(0, bg_n, OBJPROP_YDISTANCE, box_y);
-   ObjectSetInteger(0, bg_n, OBJPROP_XSIZE,     bar_w);
-   ObjectSetInteger(0, bg_n, OBJPROP_YSIZE,     box_h);
-   ObjectSetString(0,  bg_n, OBJPROP_TOOLTIP,   full_text);
-
-   ObjectSetInteger(0, txt_n, OBJPROP_XDISTANCE, txt_x_pos);
-   ObjectSetInteger(0, txt_n, OBJPROP_YDISTANCE, txt_y_pos);
-   ObjectSetString(0,  txt_n, OBJPROP_TEXT,      fitted_text);
-   ObjectSetString(0,  txt_n, OBJPROP_TOOLTIP,   full_text);
+   ObjectSetInteger(0, txt_n, OBJPROP_YDISTANCE, py + (above_line ? -2 : 2));
    return true;
   }
 
@@ -693,49 +647,30 @@ void UpdateOpenTradeMarker(const string obj_id,
    string bg_n, txt_n;
    int found_mask = FindManagedTradeMarkerObjects(obj_id, bg_n, txt_n);
 
-   int bar_x, box_y, bar_w, box_h, txt_x_pos, txt_y_pos;
-   string fitted_text;
-   if(!BuildOpenTradeMarkerLayout(text, price, above_line,
-                                  bar_x, box_y, bar_w, box_h,
-                                  txt_x_pos, txt_y_pos, fitted_text))
+   // Clean up any legacy background bar
+   if((found_mask & 1) != 0) ObjectDelete(0, bg_n);
+
+   int py;
+   if(!GetPriceScreenY(price, py))
      {
-      if((found_mask & 1) != 0) ObjectDelete(0, bg_n);
       if((found_mask & 2) != 0) ObjectDelete(0, txt_n);
       return;
      }
 
-   // ── OBJ_RECTANGLE_LABEL (background bar) ─────────────────────────
-   if((found_mask & 1) == 0)
-     {
-      if(!ObjectCreate(0, bg_n, OBJ_RECTANGLE_LABEL, 0, 0, 0)) return;
-      ObjectSetInteger(0, bg_n, OBJPROP_SELECTABLE,  false);
-      ObjectSetInteger(0, bg_n, OBJPROP_HIDDEN,       false);
-      ObjectSetInteger(0, bg_n, OBJPROP_BACK,         false);
-      ObjectSetInteger(0, bg_n, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
-      ObjectSetInteger(0, bg_n, OBJPROP_BORDER_TYPE,  BORDER_FLAT);
-     }
-   ObjectSetInteger(0, bg_n, OBJPROP_XDISTANCE, bar_x);
-   ObjectSetInteger(0, bg_n, OBJPROP_YDISTANCE, box_y);
-   ObjectSetInteger(0, bg_n, OBJPROP_XSIZE,     bar_w);
-   ObjectSetInteger(0, bg_n, OBJPROP_YSIZE,     box_h);
-   ObjectSetInteger(0, bg_n, OBJPROP_BGCOLOR,   bg_clr);
-   ObjectSetInteger(0, bg_n, OBJPROP_COLOR,     border_clr);
-   ObjectSetString(0,  bg_n, OBJPROP_TOOLTIP,   text);
-
-   // ── OBJ_LABEL (text inside the bar) ──────────────────────────────
+   // ── OBJ_LABEL right-edge text ─────────────────────────────────────
    if((found_mask & 2) == 0)
      {
       if(!ObjectCreate(0, txt_n, OBJ_LABEL, 0, 0, 0)) return;
       ObjectSetInteger(0, txt_n, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, txt_n, OBJPROP_HIDDEN,     false);
       ObjectSetInteger(0, txt_n, OBJPROP_BACK,       false);
-      ObjectSetInteger(0, txt_n, OBJPROP_CORNER,     CORNER_LEFT_UPPER);
-      ObjectSetInteger(0, txt_n, OBJPROP_ANCHOR,     ANCHOR_LEFT_UPPER);
+      ObjectSetInteger(0, txt_n, OBJPROP_CORNER,     CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, txt_n, OBJPROP_ANCHOR,     ANCHOR_RIGHT);
       ApplyHandleLabelFont(txt_n);
      }
-   ObjectSetInteger(0, txt_n, OBJPROP_XDISTANCE, txt_x_pos);
-   ObjectSetInteger(0, txt_n, OBJPROP_YDISTANCE, txt_y_pos);
-   ObjectSetString(0,  txt_n, OBJPROP_TEXT,      fitted_text);
+   ObjectSetInteger(0, txt_n, OBJPROP_XDISTANCE, 5);
+   ObjectSetInteger(0, txt_n, OBJPROP_YDISTANCE, py + (above_line ? -2 : 2));
+   ObjectSetString(0,  txt_n, OBJPROP_TEXT,      text);
    ObjectSetString(0,  txt_n, OBJPROP_TOOLTIP,   text);
    ObjectSetInteger(0, txt_n, OBJPROP_COLOR,     txt_clr);
   }
@@ -795,25 +730,74 @@ void UpdateManagedTradeMarkers(const ulong ticket)
 
    double balance    = AccountInfoDouble(ACCOUNT_BALANCE);
 
+   int  mgd_idx      = FindManagedIndex(ticket);
+   bool is_algo      = g_algo_trading_enabled;   // estado atual do toggle — não o flag histórico
+   bool partial_done = (mgd_idx >= 0 && g_managed_trades[mgd_idx].partial_done);
+
+   // Pré-computar split volumes — usados no TP marker e no Mid marker
+   // Usa vol_step_s como mínimo efetivo (não SymbolVolumeMinCached), porque
+   // EffectiveVolumeStep retorna 0.01 para cent-lot accounts onde vol_min = 0.1,
+   // e o cálculo de projeção deve seguir o mesmo passo que a UI usa.
+   double vol_step_s    = EffectiveVolumeStep();
+   double close_pct_s   = MathMax(1.0, MathMin(99.0, InpAlgoPartialClosePct));
+   double partial_vol_s = MathFloor((volume * close_pct_s / 100.0) / vol_step_s) * vol_step_s;
+   if(partial_vol_s < vol_step_s) partial_vol_s = vol_step_s;
+   double remaining_vol_s  = volume - partial_vol_s;
+   bool   can_split        = (remaining_vol_s >= vol_step_s - 1e-9);
+   double partial_pct_price_s = MathMax(1.0, MathMin(100.0, InpAlgoPartialTrigger));
+   // mid_price_s calculado apenas quando tp > 0 (inicializado com 0 aqui)
+   double mid_price_s = 0.0;
+
    // ── TP marker ─────────────────────────────────────────────────────
    if(tp > 0.0)
      {
+      // Calcular mid_price_s agora que tp é válido
+      if(is_buy)
+         mid_price_s = NormalizePriceValue(open_price + (tp - open_price) * partial_pct_price_s / 100.0);
+      else
+         mid_price_s = NormalizePriceValue(open_price - (open_price - tp) * partial_pct_price_s / 100.0);
+
       double tp_money = 0.0;
       double tp_pct   = 0.0;
       string tp_reason;
-      if(CalcNetRewardMoneyForMove(open_price, tp, volume, is_buy, tp_money, tp_reason))
-        {
-         tp_money = NormalizeDouble(tp_money, 2);
-         if(balance > 0.0)
-            tp_pct = NormalizeDouble(tp_money / balance * 100.0, 2);
-        }
-      string tp_text = StringFormat("TP %s l +$%.2f", FormatPrice(tp), tp_money);
-      if(tp_pct > 0.0)
-         tp_text += StringFormat(" l %.2f%%", tp_pct);
 
-      bool tp_above = is_buy;
-      UpdateOpenTradeMarker(tk_str + "_tp", tp_text, tp, tp_above,
-                            CLR_OVL_HANDLE_BG, CLR_PREV_TP_BORDER, CLR_PREV_TP_TEXT);
+      if(is_algo && !partial_done && can_split)
+        {
+         // Algo ativo, parcial possível.
+         // TP marker mostra apenas o lucro dos lotes RESTANTES no TP final.
+         // O usuário soma mentalmente: mid_profit + final_profit = total real.
+         // (Mostrar cumulativo no TP causava confusão: parecia que 60%+TP > sem-algo)
+         double mid_profit   = 0.0; string mid_r2;
+         double final_profit = 0.0; string final_r;
+         CalcNetRewardMoneyForMove(open_price, mid_price_s,  partial_vol_s,   is_buy, mid_profit,   mid_r2);
+         CalcNetRewardMoneyForMove(open_price, tp,           remaining_vol_s, is_buy, final_profit, final_r);
+
+         tp_money = NormalizeDouble(final_profit, 2);
+         double tp_total = NormalizeDouble(mid_profit + final_profit, 2);
+         if(balance > 0.0)
+            tp_pct = NormalizeDouble(tp_total / balance * 100.0, 2);
+
+         string tp_text = StringFormat("TP %s l +$%.2f (%.0f%% lots) l total: $%.2f",
+                                       FormatPrice(tp), tp_money,
+                                       100.0 - close_pct_s, tp_total);
+         UpdateOpenTradeMarker(tk_str + "_tp", tp_text, tp, is_buy,
+                               CLR_OVL_HANDLE_BG, CLR_PREV_TP_BORDER, CLR_PREV_TP_TEXT);
+        }
+      else
+        {
+         // Sem algo, parcial já feito, ou posição pequena demais para dividir
+         if(CalcNetRewardMoneyForMove(open_price, tp, volume, is_buy, tp_money, tp_reason))
+           {
+            tp_money = NormalizeDouble(tp_money, 2);
+            if(balance > 0.0)
+               tp_pct = NormalizeDouble(tp_money / balance * 100.0, 2);
+           }
+         string tp_text = StringFormat("TP %s l +$%.2f", FormatPrice(tp), tp_money);
+         if(tp_pct > 0.0)
+            tp_text += StringFormat(" l %.2f%%", tp_pct);
+         UpdateOpenTradeMarker(tk_str + "_tp", tp_text, tp, is_buy,
+                               CLR_OVL_HANDLE_BG, CLR_PREV_TP_BORDER, CLR_PREV_TP_TEXT);
+        }
      }
    else
       EraseManagedTradeMarkerKind(tk_str, "tp");
@@ -842,28 +826,20 @@ void UpdateManagedTradeMarkers(const ulong ticket)
       EraseManagedTradeMarkerKind(tk_str, "sl");
 
    // ── Mid-target / Partial marker ───────────────────────────────────
-   int mgd_idx = FindManagedIndex(ticket);
-   bool partial_already_done = (mgd_idx >= 0 && g_managed_trades[mgd_idx].partial_done);
-
-   if(InpShowMidTargetBlock && tp > 0.0 && !partial_already_done)
+   // Reutiliza vol_step_s/vol_min_s/partial_vol_s/mid_price_s/can_split do bloco TP acima
+   if(InpShowMidTargetBlock && tp > 0.0 && !partial_done && is_algo && can_split)
      {
-      double partial_pct = MathMax(1.0, MathMin(100.0, InpAlgoPartialTrigger));
-      double mid_price;
-      if(is_buy)
-         mid_price = NormalizePriceValue(open_price + (tp - open_price) * partial_pct / 100.0);
-      else
-         mid_price = NormalizePriceValue(open_price - (open_price - tp) * partial_pct / 100.0);
-
       double mid_money = 0.0;
       string mid_reason;
-      if(CalcNetRewardMoneyForMove(open_price, mid_price, volume, is_buy, mid_money, mid_reason))
+      if(CalcNetRewardMoneyForMove(open_price, mid_price_s, partial_vol_s, is_buy, mid_money, mid_reason))
          mid_money = NormalizeDouble(mid_money, 2);
 
-      string mid_text = StringFormat("%.0f%% TP l %s l +$%.2f",
-                                      partial_pct, FormatPrice(mid_price), mid_money);
+      string mid_text = StringFormat("%.0f%% TP l %s l +$%.2f (%.0f%% lots)",
+                                     partial_pct_price_s, FormatPrice(mid_price_s),
+                                     mid_money, close_pct_s);
 
       bool mid_above = is_buy;
-      UpdateOpenTradeMarker(tk_str + "_mid", mid_text, mid_price, mid_above,
+      UpdateOpenTradeMarker(tk_str + "_mid", mid_text, mid_price_s, mid_above,
                             CLR_OVL_HANDLE_BG, C'120,140,180', C'40,60,120');
      }
    else
