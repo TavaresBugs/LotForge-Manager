@@ -56,6 +56,7 @@ void PreviewFinancialKey::Clear()
    action           = ACTION_NONE;
    risk_mode        = RISK_MODE_LOTS;
    risk_percent     = 0.0;
+   risk_money       = 0.0;
    lots             = 0.0;
    entry_price      = 0.0;
    sl_price         = 0.0;
@@ -92,6 +93,7 @@ void PanelState::Init()
    order_comment      = "";
    risk_mode          = InpRiskMode;
    risk_percent       = InpRiskPercent;
+   risk_money         = InpRiskMoney;
    entry_line_visible = false;
    sl_line_visible    = false;
    tp_line_visible    = false;
@@ -1047,6 +1049,7 @@ void SaveStateForChartChange()
    GlobalVariableSet(GV_PFX + "lots",   g_state.lots);
    GlobalVariableSet(GV_PFX + "rmode",  (double)g_state.risk_mode);
    GlobalVariableSet(GV_PFX + "rpct",   g_state.risk_percent);
+   GlobalVariableSet(GV_PFX + "rmoney", g_state.risk_money);
    GlobalVariableSet(GV_PFX + "entry",  g_state.entry_price);
    GlobalVariableSet(GV_PFX + "sl",     g_state.sl_points);
    GlobalVariableSet(GV_PFX + "tp",     g_state.tp_points);
@@ -1066,6 +1069,7 @@ bool RestoreStateFromChartChange()
    g_state.lots         = GlobalVariableGet(GV_PFX + "lots");
    g_state.risk_mode    = (RiskMode)(int)GlobalVariableGet(GV_PFX + "rmode");
    g_state.risk_percent = GlobalVariableGet(GV_PFX + "rpct");
+   g_state.risk_money   = GlobalVariableCheck(GV_PFX + "rmoney") ? GlobalVariableGet(GV_PFX + "rmoney") : InpRiskMoney;
    g_state.entry_price  = GlobalVariableGet(GV_PFX + "entry");
    g_state.sl_points    = GlobalVariableGet(GV_PFX + "sl");
    g_state.tp_points    = GlobalVariableGet(GV_PFX + "tp");

@@ -83,7 +83,9 @@ bool CLotForgePanel::CreateInlineGroup(const int x, const int y,
 
 bool CLotForgePanel::CreateRiskModeGroup(const int x, const int y)
   {
-   string mode_text = (g_state.risk_mode == RISK_MODE_PERCENT) ? "Risk%" : "Lots";
+   string mode_text = (g_state.risk_mode == RISK_MODE_PERCENT) ? "Risk%"
+                      : (g_state.risk_mode == RISK_MODE_MONEY) ? "Money"
+                      : "Lots";
 
    if(!m_BtnRiskMode.Create(m_chart_id, m_name + "_btn_riskmode", m_subwin,
       x, y, x + LABEL_W, y + ROW_H)) return false;
@@ -96,7 +98,9 @@ bool CLotForgePanel::CreateRiskModeGroup(const int x, const int y)
    int ex = x + LABEL_W;
    string val_text = (g_state.risk_mode == RISK_MODE_PERCENT)
                      ? FormatPercent(g_state.risk_percent)
-                     : FormatLots(g_state.lots);
+                     : (g_state.risk_mode == RISK_MODE_MONEY)
+                       ? FormatMoney(g_state.risk_money)
+                       : FormatLots(g_state.lots);
    if(!m_EdtPrimary.Create(m_chart_id, m_name + "_edt_primary", m_subwin,
       ex, y, ex + EDIT_W, y + EDIT_H)) return false;
    m_EdtPrimary.Text(val_text);
@@ -117,6 +121,32 @@ bool CLotForgePanel::CreateRiskModeGroup(const int x, const int y)
    if(!Add(m_BtnPrimaryDn)) return false;
 
    return true;
+  }
+
+void CLotForgePanel::SyncEditableFieldsToState(const bool include_primary)
+  {
+   double val = 0.0;
+
+   if(include_primary && ParseDoubleText(m_EdtPrimary.Text(), val))
+     {
+      if(g_state.risk_mode == RISK_MODE_PERCENT)
+         g_state.risk_percent = MathMax(0.0, val);
+      else if(g_state.risk_mode == RISK_MODE_MONEY)
+         g_state.risk_money = MathMax(0.0, NormalizeDouble(val, 2));
+      else
+         g_state.lots = NormalizeVolumeValue(val);
+     }
+
+   if(ParseDoubleText(m_EdtEntry.Text(), val))
+      g_state.entry_price = (val <= 0.0) ? 0.0 : NormalizePriceValue(val);
+
+   if(ParseDoubleText(m_EdtTP.Text(), val))
+      g_state.tp_points = MathMax(0.0, MathRound(val));
+
+   if(ParseDoubleText(m_EdtSL.Text(), val))
+      g_state.sl_points = MathMax(0.0, MathRound(val));
+
+   ArmMarketPriceTargetsFromCurrentPoints();
   }
 
 //+------------------------------------------------------------------+
@@ -345,12 +375,16 @@ bool CLotForgePanel::CreatePanel(const long chart, const string name,
 
 void CLotForgePanel::RefreshValues(void)
   {
-   string mode_text = (g_state.risk_mode == RISK_MODE_PERCENT) ? "Risk%" : "Lots";
+   string mode_text = (g_state.risk_mode == RISK_MODE_PERCENT) ? "Risk%"
+                      : (g_state.risk_mode == RISK_MODE_MONEY) ? "Money"
+                      : "Lots";
    if(m_BtnRiskMode.Text() != mode_text) m_BtnRiskMode.Text(mode_text);
 
    string prim_text = (g_state.risk_mode == RISK_MODE_PERCENT)
                       ? FormatPercent(g_state.risk_percent)
-                      : FormatLots(g_state.lots);
+                      : (g_state.risk_mode == RISK_MODE_MONEY)
+                        ? FormatMoney(g_state.risk_money)
+                        : FormatLots(g_state.lots);
    if(m_EdtPrimary.Text() != prim_text) m_EdtPrimary.Text(prim_text);
 
    string entry_text = g_state.entry_price <= 0.0 ? "0" : FormatPrice(g_state.entry_price);
@@ -466,9 +500,13 @@ CompactEditTarget CLotForgePanel::ResolveEditTarget(const string obj_name)
       return EDIT_TARGET_NONE;
 
    if(obj_name == prefix + "_edt_primary")
-      return (g_state.risk_mode == RISK_MODE_PERCENT)
-             ? EDIT_TARGET_RISK_PCT
-             : EDIT_TARGET_LOTS;
+     {
+      if(g_state.risk_mode == RISK_MODE_PERCENT)
+         return EDIT_TARGET_RISK_PCT;
+      if(g_state.risk_mode == RISK_MODE_MONEY)
+         return EDIT_TARGET_RISK_MONEY;
+      return EDIT_TARGET_LOTS;
+     }
    if(obj_name == prefix + "_edt_entry")
       return EDIT_TARGET_ENTRY;
    if(obj_name == prefix + "_edt_tp")
@@ -619,8 +657,63 @@ void CLotForgePanel::Maximize(void)
 
 void CLotForgePanel::OnClickRiskMode(void)
   {
-   g_state.risk_mode = (g_state.risk_mode == RISK_MODE_LOTS)
-                       ? RISK_MODE_PERCENT : RISK_MODE_LOTS;
+   SyncEditableFieldsToState();
+
+   string sync_reason = "";
+   RiskMode next_mode = g_state.risk_mode;
+
+   if(g_state.risk_mode == RISK_MODE_LOTS)
+     {
+      double next_risk_pct = 0.0;
+      double entry_price   = EffectiveStateEntryPrice(g_state.action);
+      double sl_price      = EffectiveStateSLPrice(g_state.action, entry_price);
+
+      if(CalcRiskPercentFromLots(entry_price, sl_price, g_state.lots,
+                                 IsBuyAction(g_state.action),
+                                 next_risk_pct, sync_reason))
+         g_state.risk_percent = next_risk_pct;
+      else
+        {
+         g_state.risk_percent = 0.0;
+         if(sync_reason != "")
+            Print("[RISK MODE] Falha ao sincronizar Lots -> %: ", sync_reason);
+         SetStatus("Modo Risk%: sem conversao valida; ajuste o percentual manualmente.");
+        }
+      next_mode = RISK_MODE_PERCENT;
+     }
+   else if(g_state.risk_mode == RISK_MODE_PERCENT)
+     {
+      double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+      if(balance > 0.0 && g_state.risk_percent > 0.0)
+         g_state.risk_money = NormalizeDouble(balance * g_state.risk_percent / 100.0, 2);
+      else
+        {
+         g_state.risk_money = 0.0;
+         SetStatus("Modo Money: sem conversao valida; ajuste o valor manualmente.");
+        }
+      next_mode = RISK_MODE_MONEY;
+     }
+   else
+     {
+      double next_lots   = 0.0;
+      double entry_price = EffectiveStateEntryPrice(g_state.action);
+      double sl_price    = EffectiveStateSLPrice(g_state.action, entry_price);
+
+      if(CalcLotsFromRiskMoney(entry_price, sl_price, g_state.risk_money,
+                               IsBuyAction(g_state.action),
+                               next_lots, sync_reason))
+         g_state.lots = next_lots;
+      else
+        {
+         g_state.lots = 0.0;
+         if(sync_reason != "")
+            Print("[RISK MODE] Falha ao sincronizar Money -> Lots: ", sync_reason);
+         SetStatus("Modo Lots: sem conversao valida; ajuste os lotes manualmente.");
+        }
+      next_mode = RISK_MODE_LOTS;
+     }
+
+   g_state.risk_mode = next_mode;
    QueueUiRefresh();
   }
 
@@ -628,6 +721,14 @@ void CLotForgePanel::OnClickPrimaryUp(void)
   {
    if(g_state.risk_mode == RISK_MODE_PERCENT)
      { g_state.risk_percent = NormalizeDouble(g_state.risk_percent + 0.25, 2); }
+   else if(g_state.risk_mode == RISK_MODE_MONEY)
+     {
+      double step = (g_state.risk_money < 10.0)  ? 0.50
+                  : (g_state.risk_money < 100.0) ? 1.00
+                  : (g_state.risk_money < 1000.0)? 5.00
+                  : 10.00;
+      g_state.risk_money = NormalizeDouble(g_state.risk_money + step, 2);
+     }
    else
      { AdjustLots(+1); }
    QueueUiRefresh();
@@ -637,6 +738,14 @@ void CLotForgePanel::OnClickPrimaryDn(void)
   {
    if(g_state.risk_mode == RISK_MODE_PERCENT)
      { g_state.risk_percent = MathMax(0.0, NormalizeDouble(g_state.risk_percent - 0.25, 2)); }
+   else if(g_state.risk_mode == RISK_MODE_MONEY)
+     {
+      double step = (g_state.risk_money <= 10.0)  ? 0.50
+                  : (g_state.risk_money <= 100.0) ? 1.00
+                  : (g_state.risk_money <= 1000.0)? 5.00
+                  : 10.00;
+      g_state.risk_money = MathMax(0.0, NormalizeDouble(g_state.risk_money - step, 2));
+     }
    else
      { AdjustLots(-1); }
    QueueUiRefresh();
@@ -701,29 +810,7 @@ void CLotForgePanel::OnClickCancel(void)
 
 void CLotForgePanel::OnClickSend(void)
   {
-   double val;
-   string text;
-
-   text = m_EdtPrimary.Text();
-   if(ParseDoubleText(text, val))
-     {
-      if(g_state.risk_mode == RISK_MODE_PERCENT)
-         g_state.risk_percent = MathMax(0.0, val);
-      else
-         g_state.lots = NormalizeVolumeValue(val);
-     }
-   text = m_EdtEntry.Text();
-   if(ParseDoubleText(text, val))
-      g_state.entry_price = (val <= 0.0) ? 0.0 : NormalizePriceValue(val);
-   text = m_EdtTP.Text();
-   if(ParseDoubleText(text, val))
-      g_state.tp_points = MathMax(0.0, MathRound(val));
-   text = m_EdtSL.Text();
-   if(ParseDoubleText(text, val))
-      g_state.sl_points = MathMax(0.0, MathRound(val));
-   if(IsMarketAction(g_state.action) &&
-      (g_state.editing_object == EDIT_TARGET_TP || g_state.editing_object == EDIT_TARGET_SL))
-      ArmMarketPriceTargetsFromCurrentPoints();
+   SyncEditableFieldsToState();
    MarkPreviewDirty();
    g_ui.refresh_values = true;
    QueueUiCommand(UI_CMD_SEND);
@@ -780,6 +867,8 @@ void CLotForgePanel::OnEndEditPrimary(void)
      {
       if(g_state.risk_mode == RISK_MODE_PERCENT)
          g_state.risk_percent = MathMax(0.0, val);
+      else if(g_state.risk_mode == RISK_MODE_MONEY)
+         g_state.risk_money = MathMax(0.0, NormalizeDouble(val, 2));
       else
          g_state.lots = NormalizeVolumeValue(val);
      }

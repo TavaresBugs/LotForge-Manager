@@ -284,6 +284,56 @@ bool CalcNetRewardMoneyForMove(const double open_price,
    return true;
   }
 
+bool CalcRiskMoneyFromLots(const double entry_price, const double sl_price,
+                           const double lots, const bool is_buy,
+                           double &out_risk_money, string &out_reason)
+  {
+   out_risk_money = 0.0;
+   out_reason     = "";
+
+   if(lots <= 0.0)
+     { out_reason = "Erro: lote invalido para calcular valor de risco."; return false; }
+   if(entry_price <= 0.0 || sl_price <= 0.0)
+     { out_reason = "Erro: preco de entrada ou SL invalido para calcular risco."; return false; }
+
+   double sl_dist = MathAbs(entry_price - sl_price);
+   if(sl_dist < _Point * 0.5)
+     { out_reason = "Erro: SL invalido para calcular risco."; return false; }
+
+   if(is_buy && sl_price >= entry_price)
+     { out_reason = "Erro: SL de compra deve estar abaixo da entrada."; return false; }
+   if(!is_buy && sl_price <= entry_price)
+     { out_reason = "Erro: SL de venda deve estar acima da entrada."; return false; }
+
+   if(!CalcNetRiskMoneyForMove(entry_price, sl_price, lots, is_buy, out_risk_money, out_reason))
+      return false;
+
+   out_risk_money = NormalizeDouble(out_risk_money, 2);
+   return (out_risk_money > 0.0);
+  }
+
+bool CalcRiskPercentFromLots(const double entry_price, const double sl_price,
+                             const double lots, const bool is_buy,
+                             double &out_risk_pct, string &out_reason)
+  {
+   out_risk_pct = 0.0;
+   out_reason   = "";
+
+   double risk_money = 0.0;
+   if(!CalcRiskMoneyFromLots(entry_price, sl_price, lots, is_buy, risk_money, out_reason))
+      return false;
+
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(balance <= 0.0)
+     { out_reason = "Erro: saldo da conta indisponivel."; return false; }
+
+   out_risk_pct = NormalizeDouble(risk_money / balance * 100.0, 2);
+   if(out_risk_pct <= 0.0)
+     { out_reason = "Erro: percentual de risco calculado como zero."; return false; }
+
+   return true;
+  }
+
 bool CalcSymbolPnLForMove(const double open_price,
                           const double close_price,
                           const double volume,
@@ -313,18 +363,14 @@ bool CalcSymbolPnLForMove(const double open_price,
   }
 
 //+------------------------------------------------------------------+
-//|  CalcLotsFromRiskPercent                                         |
+//|  CalcLotsFromRiskMoney                                           |
 //|                                                                  |
-//|  Derives position size from account risk %.                      |
-//|  Uses symbol-aware profit/loss for a 1-lot move from entry to SL |
-//|  then scales lots conservatively to the broker step grid.        |
-//|                                                                  |
-//|  Returns false (with out_lots = 0) on any invalid input or       |
-//|  data unavailability — no silent fallbacks.                      |
+//|  Derives position size from a fixed money risk in account ccy.   |
 //+------------------------------------------------------------------+
 
-bool CalcLotsFromRiskPercent(const double entry_price, const double sl_price,
-                             const bool is_buy, double &out_lots, string &out_reason)
+bool CalcLotsFromRiskMoney(const double entry_price, const double sl_price,
+                           const double risk_money, const bool is_buy,
+                           double &out_lots, string &out_reason)
   {
    out_lots   = 0.0;
    out_reason = "";
@@ -343,13 +389,8 @@ bool CalcLotsFromRiskPercent(const double entry_price, const double sl_price,
    if(!is_buy && sl_price <= entry_price)
      { out_reason = "Erro: SL de venda deve estar acima da entrada."; return false; }
 
-   // ── Account base ─────────────────────────────────────────────────
-   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-   if(balance <= 0.0)
-     { out_reason = "Erro: saldo da conta indisponível."; return false; }
-   double risk_money = balance * g_state.risk_percent / 100.0;
    if(risk_money <= 0.0)
-     { out_reason = "Erro: percentual de risco resulta em valor zero."; return false; }
+     { out_reason = "Erro: valor de risco resulta em zero."; return false; }
 
    // ── Core formula ──────────────────────────────────────────────────
    double pnl_per_lot = 0.0;
@@ -366,13 +407,105 @@ bool CalcLotsFromRiskPercent(const double entry_price, const double sl_price,
    double vol_min  = SymbolVolumeMinCached();
    double vol_max  = SymbolVolumeMaxCached();
    double vol_step = SymbolVolumeStepCached();
+   int    vol_digits = VolumeDigits();
 
-   // Floor to step boundary (conservative — do not exceed risk target)
+   if(raw_lots < vol_min)
+     {
+      out_reason = StringFormat(
+         "Erro: risco muito baixo para o lote mínimo do símbolo (calculado %s, mínimo %s).",
+         FormatLots(raw_lots), FormatLots(vol_min));
+      return false;
+     }
+
+   if(raw_lots >= vol_max)
+     {
+      out_lots = NormalizeDouble(vol_max, vol_digits);
+      return (out_lots > 0.0);
+     }
+
+   // Money mode targets the closest valid lot to the requested risk.
+   double raw_steps   = raw_lots / vol_step;
+   double lower_steps = MathFloor(raw_steps);
+   double upper_steps = MathCeil(raw_steps);
+   double lower_lots  = NormalizeDouble(lower_steps * vol_step, vol_digits);
+   double upper_lots  = NormalizeDouble(upper_steps * vol_step, vol_digits);
+
+   if(lower_lots < vol_min) lower_lots = 0.0;
+   if(upper_lots < vol_min) upper_lots = 0.0;
+   if(lower_lots > vol_max) lower_lots = 0.0;
+   if(upper_lots > vol_max) upper_lots = NormalizeDouble(vol_max, vol_digits);
+
+   double lower_diff = DBL_MAX;
+   double upper_diff = DBL_MAX;
+   if(lower_lots > 0.0)
+      lower_diff = MathAbs(lower_lots * loss_per_lot - risk_money);
+   if(upper_lots > 0.0)
+      upper_diff = MathAbs(upper_lots * loss_per_lot - risk_money);
+
+   double norm_lots = 0.0;
+   if(lower_diff < upper_diff)
+      norm_lots = lower_lots;
+   else if(upper_diff < lower_diff)
+      norm_lots = upper_lots;
+   else
+      norm_lots = (upper_lots > 0.0) ? upper_lots : lower_lots;
+
+   if(norm_lots <= 0.0)
+     {
+      out_reason = "Erro: nao foi possivel arredondar o lote para um valor valido.";
+      return false;
+     }
+
+   out_lots = norm_lots;
+   return (out_lots > 0.0);
+  }
+
+//+------------------------------------------------------------------+
+//|  CalcLotsFromRiskPercent                                         |
+//+------------------------------------------------------------------+
+
+bool CalcLotsFromRiskPercent(const double entry_price, const double sl_price,
+                             const bool is_buy, double &out_lots, string &out_reason)
+  {
+   out_lots   = 0.0;
+   out_reason = "";
+
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(balance <= 0.0)
+     { out_reason = "Erro: saldo da conta indisponível."; return false; }
+
+   double risk_money = balance * g_state.risk_percent / 100.0;
+   if(risk_money <= 0.0)
+     { out_reason = "Erro: percentual de risco resulta em valor zero."; return false; }
+
+   if(entry_price <= 0.0 || sl_price <= 0.0)
+     { out_reason = "Erro: preço de entrada ou SL inválido para cálculo de lote."; return false; }
+
+   double sl_dist = MathAbs(entry_price - sl_price);
+   if(sl_dist < _Point * 0.5)
+     { out_reason = "Erro: SL inválido para calcular lote por risco."; return false; }
+
+   if(is_buy  && sl_price >= entry_price)
+     { out_reason = "Erro: SL de compra deve estar abaixo da entrada."; return false; }
+   if(!is_buy && sl_price <= entry_price)
+     { out_reason = "Erro: SL de venda deve estar acima da entrada."; return false; }
+
+   double pnl_per_lot = 0.0;
+   if(!CalcSymbolPnLForMove(entry_price, sl_price, 1.0, is_buy, pnl_per_lot, out_reason))
+      return false;
+
+   double loss_per_lot = MathAbs(pnl_per_lot) + CalcRoundTripCommissionMoney(1.0);
+   if(loss_per_lot <= 0.0)
+     { out_reason = "Erro: custo por lote calculado como zero."; return false; }
+
+   double raw_lots = risk_money / loss_per_lot;
+   double vol_min  = SymbolVolumeMinCached();
+   double vol_max  = SymbolVolumeMaxCached();
+   double vol_step = SymbolVolumeStepCached();
+
    double steps     = MathFloor(raw_lots / vol_step);
    double norm_lots = NormalizeDouble(steps * vol_step, VolumeDigits());
 
-   // ── Below broker minimum → fail cleanly; do NOT promote upward ───
-   // Clamping up to vol_min would silently increase the trader's risk.
    if(norm_lots < vol_min)
      {
       out_reason = StringFormat(
@@ -381,7 +514,6 @@ bool CalcLotsFromRiskPercent(const double entry_price, const double sl_price,
       return false;
      }
 
-   // Cap downward at vol_max (conservative — never exceed broker cap)
    if(norm_lots > vol_max) norm_lots = NormalizeDouble(vol_max, VolumeDigits());
 
    out_lots = norm_lots;
@@ -438,6 +570,16 @@ bool BuildTradePlan(TradeParams &params, string &out_reason)
       params.lots     = calc_lots;
       params.risk_pct = g_state.risk_percent;
      }
+   else if(g_state.risk_mode == RISK_MODE_MONEY)
+     {
+      double calc_lots;
+      string calc_reason;
+      if(!CalcLotsFromRiskMoney(params.entry_price, params.sl_price,
+                                g_state.risk_money, is_buy, calc_lots, calc_reason))
+        { out_reason = calc_reason; return false; }
+      params.lots     = calc_lots;
+      params.risk_pct = 0.0;
+     }
    else
      {
       params.lots     = g_state.lots;
@@ -469,7 +611,7 @@ bool BuildTradePlan(TradeParams &params, string &out_reason)
             params.reward_money = NormalizeDouble(reward_money, 2);
         }
 
-      if(g_state.risk_mode == RISK_MODE_LOTS)
+      if(g_state.risk_mode != RISK_MODE_PERCENT)
         {
          double balance = AccountInfoDouble(ACCOUNT_BALANCE);
          if(balance > 0.0)
@@ -621,10 +763,12 @@ bool ValidateTradeRequest(const TradeParams &params, string &message)
    // ── All checks passed ─────────────────────────────────────────────
    string action_lbl = EffectiveActionLabel(g_state.action, params.entry_price);
 
-   // lots_origin: show risk% and money when in percent mode
+   // lots_origin: show the selected sizing origin when available
    string lots_origin = "";
    if(g_state.risk_mode == RISK_MODE_PERCENT && params.risk_pct > 0.0)
       lots_origin = StringFormat(" [%.2f%%=$%.2f]", params.risk_pct, params.risk_money);
+   else if(g_state.risk_mode == RISK_MODE_MONEY && params.risk_money > 0.0)
+      lots_origin = StringFormat(" [$%.2f alvo, real $%.2f]", g_state.risk_money, params.risk_money);
 
    // TP field: price + points, or "sem TP"
    string tp_str = (params.tp_price > 0.0)
@@ -862,7 +1006,7 @@ bool SendSelectedOrder(const TradeParams &plan)
       // ── Success ────────────────────────────────────────────────────
       if(IsMarketAction(g_state.action))
         {
-         string msg = StringFormat("✓ %s enviado — %s lots @ %s | ticket #%d",
+         string msg = StringFormat("✓ %s enviado — %s lots @ %s l ticket #%d",
                                    effective_type,
                                    FormatLots(plan.lots),
                                    FormatPrice(plan.entry_price),
@@ -873,7 +1017,7 @@ bool SendSelectedOrder(const TradeParams &plan)
         }
       else
         {
-         SetStatus(StringFormat("✓ %s colocado — %s lots @ %s | ticket #%d",
+         SetStatus(StringFormat("✓ %s colocado — %s lots @ %s l ticket #%d",
                                 effective_type,
                                 FormatLots(plan.lots),
                                 FormatPrice(plan.entry_price),

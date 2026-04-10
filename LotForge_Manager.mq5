@@ -46,6 +46,7 @@ enum CompactEditTarget
    EDIT_TARGET_NONE   = 0,
    EDIT_TARGET_LOTS,
    EDIT_TARGET_RISK_PCT,
+   EDIT_TARGET_RISK_MONEY,
    EDIT_TARGET_ENTRY,
    EDIT_TARGET_SL,
    EDIT_TARGET_TP
@@ -54,7 +55,8 @@ enum CompactEditTarget
 enum RiskMode
   {
    RISK_MODE_LOTS     = 0,
-   RISK_MODE_PERCENT
+   RISK_MODE_PERCENT,
+   RISK_MODE_MONEY
   };
 
 enum DragPhase
@@ -92,6 +94,7 @@ input int      InpDistanceStepPoints   = 10;
 input group "=== Risco ==="
 input RiskMode InpRiskMode             = RISK_MODE_LOTS;
 input double   InpRiskPercent          = 1.0;
+input double   InpRiskMoney            = 1.0;   // risco fixo na moeda da conta
 
 input group "=== Custos ==="
 input double   InpCommissionPerLot     = 0.0;   // comissão por lado, por 1.00 lote, na moeda da conta
@@ -258,6 +261,7 @@ struct PanelState
 
    RiskMode          risk_mode;
    double            risk_percent;
+   double            risk_money;
 
    bool              entry_line_visible;
    bool              sl_line_visible;
@@ -376,6 +380,7 @@ struct PreviewFinancialKey
    TradePanelAction  action;
    RiskMode          risk_mode;
    double            risk_percent;
+   double            risk_money;
    double            lots;
    double            entry_price;
    double            sl_price;
@@ -463,8 +468,17 @@ double  EffectiveStateEntryPrice(const TradePanelAction action);
 double  EffectiveStateSLPrice(const TradePanelAction action, const double entry_price);
 double  EffectiveStateTPPrice(const TradePanelAction action, const double entry_price);
 bool    BuildTradePlan(TradeParams &params, string &out_reason);
+bool    CalcLotsFromRiskMoney(const double entry_price, const double sl_price,
+                              const double risk_money, const bool is_buy,
+                              double &out_lots, string &out_reason);
 bool    CalcLotsFromRiskPercent(const double entry_price, const double sl_price,
                                 const bool is_buy, double &out_lots, string &out_reason);
+bool    CalcRiskMoneyFromLots(const double entry_price, const double sl_price,
+                              const double lots, const bool is_buy,
+                              double &out_risk_money, string &out_reason);
+bool    CalcRiskPercentFromLots(const double entry_price, const double sl_price,
+                                const double lots, const bool is_buy,
+                                double &out_risk_pct, string &out_reason);
 bool    ValidateTradeRequest(const TradeParams &params, string &message);
 bool    SendSelectedOrder(const TradeParams &plan);
 void    SetStatus(const string text, const bool sticky = false);
@@ -591,6 +605,7 @@ private:
                      CEdit &edt, const string edt_text,
                      CButton &btn_up, CButton &btn_dn);
    bool           CreateRiskModeGroup(const int x, const int y);
+   void           SyncEditableFieldsToState(const bool include_primary = true);
 
 public:
    bool           CreatePanel(const long chart, const string name,

@@ -5,7 +5,7 @@ LotForge Manager — painel de dimensionamento de posição e gerenciamento de t
 ## Versão atual
 
 - **v1.0** — Lançamento inicial
-  - Position sizing automático (risco %, valor fixo, lots)
+  - Position sizing automático (risco %, valor fixo na moeda da conta, lots)
   - Painel CAppDialog com drag nativo e layout compacto
   - Preview visual de TP, SL e entrada no gráfico
   - Gerenciamento automatizado: Break-Even, Trailing Stop, fechamento parcial
@@ -13,7 +13,7 @@ LotForge Manager — painel de dimensionamento de posição e gerenciamento de t
 
 ## Funcionalidades
 
-- **Position Sizing** — calcula lots automatic com base em risco %, SL, ou valor fixo
+- **Position Sizing** — calcula lots automatic com base em risco %, valor fixo na moeda da conta, SL, ou lots
 - **Painel CAppDialog** — interface com drag nativo, layout compacto de duas colunas
 - **Preview visual** — linhas/zones de TP, SL e entrada no gráfico antes de confirmar a ordem
 - **Gerenciamento automatizado** — Break-Even, Trailing Stop, e fechamento parcial

@@ -682,6 +682,7 @@ bool PreviewFinancialKeysMatch(const PreviewFinancialKey &lhs,
            lhs.action            == rhs.action &&
            lhs.risk_mode         == rhs.risk_mode &&
            lhs.risk_percent      == rhs.risk_percent &&
+           lhs.risk_money        == rhs.risk_money &&
            lhs.lots              == rhs.lots &&
            lhs.entry_price       == rhs.entry_price &&
            lhs.sl_price          == rhs.sl_price &&
@@ -703,6 +704,7 @@ void BuildPreviewFinancialKey(const PreviewSnapshot &snapshot,
    key.action           = snapshot.action;
    key.risk_mode        = g_state.risk_mode;
    key.risk_percent     = NormalizeDouble(g_state.risk_percent, 4);
+   key.risk_money       = NormalizeDouble(g_state.risk_money, 2);
    key.lots             = NormalizeDouble(g_state.lots, VolumeDigits());
    key.entry_price      = NormalizePriceValue(snapshot.entry_price);
    key.sl_price         = (snapshot.sl_price > 0.0) ? NormalizePriceValue(snapshot.sl_price) : 0.0;
@@ -793,17 +795,17 @@ void ApplyPreviewFinancialStateToSnapshot(PreviewSnapshot &snapshot)
    snapshot.reward_pct   = snapshot.plan_valid ? g_preview_financial_state.plan.reward_pct : 0.0;
 
    snapshot.en_label = snapshot.short_label + " " + FormatPrice(snapshot.entry_price) +
-                       " | Lots " + FormatLots(snapshot.plan_lots);
+                       " l Lots " + FormatLots(snapshot.plan_lots);
 
    if(snapshot.sl_price > 0.0)
      {
       if(snapshot.plan_valid && snapshot.risk_money > 0.0)
         {
-         snapshot.sl_label = StringFormat("SL %s | -$%.2f",
+         snapshot.sl_label = StringFormat("SL %s l -$%.2f",
                                           FormatPrice(snapshot.sl_price),
                                           snapshot.risk_money);
          if(snapshot.risk_pct > 0.0)
-            snapshot.sl_label += StringFormat(" | %.2f%%", snapshot.risk_pct);
+            snapshot.sl_label += StringFormat(" l %.2f%%", snapshot.risk_pct);
         }
       else
          snapshot.sl_label = "SL " + FormatPrice(snapshot.sl_price);
@@ -813,11 +815,11 @@ void ApplyPreviewFinancialStateToSnapshot(PreviewSnapshot &snapshot)
      {
       if(snapshot.plan_valid && snapshot.reward_money > 0.0)
         {
-         snapshot.tp_label = StringFormat("TP %s | +$%.2f",
+         snapshot.tp_label = StringFormat("TP %s l +$%.2f",
                                           FormatPrice(snapshot.tp_price),
                                           snapshot.reward_money);
          if(snapshot.reward_pct > 0.0)
-            snapshot.tp_label += StringFormat(" | %.2f%%", snapshot.reward_pct);
+            snapshot.tp_label += StringFormat(" l %.2f%%", snapshot.reward_pct);
         }
       else
          snapshot.tp_label = "TP " + FormatPrice(snapshot.tp_price);
