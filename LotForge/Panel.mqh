@@ -22,7 +22,6 @@ ON_EVENT(ON_CLICK, m_BtnBuy,          OnClickBuy)
 ON_EVENT(ON_CLICK, m_BtnSellPending,  OnClickSellPending)
 ON_EVENT(ON_CLICK, m_BtnBuyPending,   OnClickBuyPending)
 ON_EVENT(ON_CLICK, m_BtnBE,           OnClickBE)
-ON_EVENT(ON_CLICK, m_BtnTrailing,     OnClickTrailing)
 ON_EVENT(ON_CLICK, m_ChkAutoBE,       OnClickAutoBE)
 ON_EVENT(ON_CLICK, m_ChkAutoTrailing, OnClickAutoTrailing)
 ON_EVENT(ON_CLICK, m_BtnAlgoTrading,  OnClickAlgoTrading)
@@ -42,25 +41,25 @@ EVENT_MAP_END(CAppDialog)
 bool CLotForgePanel::CreateInlineGroup(const int x, const int y,
                                         CButton &lbl, const string lbl_text,
                                         CEdit &edt, const string edt_text,
-                                        CButton &btn_up, CButton &btn_dn)
+                                        CButton &btn_up, CButton &btn_dn,
+                                        const int lbl_w, const int edt_w)
   {
-   // Solid label block: white background, gray text — matches V1.07 style
    if(!lbl.Create(m_chart_id, m_name + "_lbl_" + lbl_text, m_subwin,
-      x, y, x + LABEL_W, y + ROW_H)) return false;
+      x, y, x + lbl_w, y + ROW_H)) return false;
    lbl.Text(lbl_text);
    lbl.FontSize(9);
-   lbl.Color(C'110,110,110');      // ghosted gray text
-   lbl.ColorBackground(clrWhite);  // solid white block
+   lbl.Color(C'110,110,110');
+   lbl.ColorBackground(clrWhite);
    if(!Add(lbl)) return false;
 
-   int ex = x + LABEL_W;
+   int ex = x + lbl_w;
    if(!edt.Create(m_chart_id, m_name + "_edt_" + lbl_text, m_subwin,
-      ex, y, ex + EDIT_W, y + EDIT_H)) return false;
+      ex, y, ex + edt_w, y + EDIT_H)) return false;
    edt.Text(edt_text);
    edt.FontSize(9);
    if(!Add(edt)) return false;
 
-   int sx = ex + EDIT_W + 1;
+   int sx = ex + edt_w + 1;
    if(!btn_up.Create(m_chart_id, m_name + "_up_" + lbl_text, m_subwin,
       sx, y, sx + SPIN_W, y + SPIN_H)) return false;
    btn_up.Text("+");
@@ -68,7 +67,7 @@ bool CLotForgePanel::CreateInlineGroup(const int x, const int y,
    if(!Add(btn_up)) return false;
 
    if(!btn_dn.Create(m_chart_id, m_name + "_dn_" + lbl_text, m_subwin,
-      sx, y + SPIN_H, sx + SPIN_W, y + ROW_H)) return false;
+      sx, y + SPIN_H + 1, sx + SPIN_W, y + ROW_H)) return false;
    btn_dn.Text("-");
    btn_dn.FontSize(7);
    if(!Add(btn_dn)) return false;
@@ -81,33 +80,34 @@ bool CLotForgePanel::CreateInlineGroup(const int x, const int y,
 //|  Creates: [RiskMode btn][Edit][▲][▼]                             |
 //+------------------------------------------------------------------+
 
-bool CLotForgePanel::CreateRiskModeGroup(const int x, const int y)
+bool CLotForgePanel::CreateRiskModeGroup(const int x, const int y,
+                                          const int lbl_w, const int edt_w)
   {
    string mode_text = (g_state.risk_mode == RISK_MODE_PERCENT) ? "Risk%"
                       : (g_state.risk_mode == RISK_MODE_MONEY) ? "Money"
                       : "Lots";
 
    if(!m_BtnRiskMode.Create(m_chart_id, m_name + "_btn_riskmode", m_subwin,
-      x, y, x + LABEL_W, y + ROW_H)) return false;
+      x, y, x + lbl_w, y + ROW_H)) return false;
    m_BtnRiskMode.Text(mode_text);
    m_BtnRiskMode.FontSize(9);
-   m_BtnRiskMode.ColorBackground(clrWhite);      // v1.07: flat label look, white like edit
-   m_BtnRiskMode.Color(clrBlack);                // dark text on white
+   m_BtnRiskMode.ColorBackground(clrWhite);
+   m_BtnRiskMode.Color(clrBlack);
    if(!Add(m_BtnRiskMode)) return false;
 
-   int ex = x + LABEL_W;
+   int ex = x + lbl_w;
    string val_text = (g_state.risk_mode == RISK_MODE_PERCENT)
                      ? FormatPercent(g_state.risk_percent)
                      : (g_state.risk_mode == RISK_MODE_MONEY)
                        ? FormatMoney(g_state.risk_money)
                        : FormatLots(g_state.lots);
    if(!m_EdtPrimary.Create(m_chart_id, m_name + "_edt_primary", m_subwin,
-      ex, y, ex + EDIT_W, y + EDIT_H)) return false;
+      ex, y, ex + edt_w, y + EDIT_H)) return false;
    m_EdtPrimary.Text(val_text);
    m_EdtPrimary.FontSize(9);
    if(!Add(m_EdtPrimary)) return false;
 
-   int sx = ex + EDIT_W + 2;
+   int sx = ex + edt_w + 2;
    if(!m_BtnPrimaryUp.Create(m_chart_id, m_name + "_up_primary", m_subwin,
       sx, y, sx + SPIN_W, y + SPIN_H)) return false;
    m_BtnPrimaryUp.Text("+");
@@ -115,7 +115,7 @@ bool CLotForgePanel::CreateRiskModeGroup(const int x, const int y)
    if(!Add(m_BtnPrimaryUp)) return false;
 
    if(!m_BtnPrimaryDn.Create(m_chart_id, m_name + "_dn_primary", m_subwin,
-      sx, y + SPIN_H, sx + SPIN_W, y + ROW_H)) return false;
+      sx, y + SPIN_H + 1, sx + SPIN_W, y + ROW_H)) return false;
    m_BtnPrimaryDn.Text("-");
    m_BtnPrimaryDn.FontSize(7);
    if(!Add(m_BtnPrimaryDn)) return false;
@@ -152,14 +152,13 @@ void CLotForgePanel::SyncEditableFieldsToState(const bool include_primary)
 //+------------------------------------------------------------------+
 //|  CLotForgePanel :: CreatePanel                                    |
 //|                                                                  |
-//|  Compact two-column layout:                                      |
-//|  Row 1: [Lots/Risk%][val][±]  [Entry][val][±]                   |
+//|  v2.0 layout (no comment, no trailing/auto rows):                |
+//|  Row 1: [Lots/Risk% 90][val 70][±17]  [Entry][val][±]           |
 //|  Row 2: [TP][val][±]          [SL][val][±]                       |
-//|  Row 3: [Sell]                [Buy]                              |
+//|  Row 3: [Sell 145]  [BE ~46]  [Buy 145]                         |
 //|  Row 4: [Sell Pending]        [Buy Pending]                      |
-//|  Row 5: [BE ■amber]           [Trailing ■purple]                 |
-//|  Row 6: [☐ Auto BE]          [☐ Auto Trailing]  (checkboxes)    |
-//|  Row 7: [Cancel]              [Send]             (always last)   |
+//|  Row 5: [☐ Algo Trading]                      (full width)       |
+//|  Row 6: [Cancel]              [Send]                             |
 //+------------------------------------------------------------------+
 
 bool CLotForgePanel::CreatePanel(const long chart, const string name,
@@ -170,64 +169,81 @@ bool CLotForgePanel::CreatePanel(const long chart, const string name,
    if(!CAppDialog::Create(chart, name, subwin, x1, y1, x2, y2))
       return false;
 
-   // Compute layout metrics from the REAL client area reported by CAppDialog.
-   // CAppDialog's chrome (outer frame + title bar border insets) makes the
-   // usable client narrower than PANEL_W.  Using ClientAreaWidth() here is
-   // the correct approach — it reflects the actual drawable rectangle so the
-   // right column never gets clipped regardless of DPI or border thickness.
-   m_content_w = ClientAreaWidth() - 6;   // 3px margin each side inside client area
+   m_content_w = ClientAreaWidth() - 6;
    m_col_w     = (m_content_w - COL_GAP) / 2;
 
    int cx = 3;
    int cy = 2;
 
-   // ── Row 1: RiskMode group + Entry group ────────────────────────
-   if(!CreateRiskModeGroup(cx, cy)) return false;
-   int rx = cx + m_col_w + COL_GAP;
+   // ── Row 1: RiskMode group (left) + Entry group (right) ─────────
+   //  v2.1: symmetric columns — same split as TP/SL row
+   int sym_col_w = (m_content_w - COL_GAP) / 2;
+   int sym_edt_w = sym_col_w - INLINE_LABEL_W - SPIN_W - 1;
+
+   if(!CreateRiskModeGroup(cx, cy, INLINE_LABEL_W, sym_edt_w)) return false;
+   int rx = cx + sym_col_w + COL_GAP;
    if(!CreateInlineGroup(rx, cy,
          m_LblEntry, "Entry",
          m_EdtEntry, g_state.entry_price <= 0.0 ? "0" : FormatPrice(g_state.entry_price),
-         m_BtnEntryUp, m_BtnEntryDn)) return false;
+         m_BtnEntryUp, m_BtnEntryDn,
+         INLINE_LABEL_W, sym_edt_w)) return false;
    cy += ROW_H + ROW_GAP;
 
-   // ── Row 2: TP group + SL group ─────────────────────────────────
+   // ── Row 2: TP group + SL group (same symmetric columns) ────────
    if(!CreateInlineGroup(cx, cy,
          m_LblTP, "TP",
          m_EdtTP, FormatPoints(g_state.tp_points),
-         m_BtnTPUp, m_BtnTPDn)) return false;
-   if(!CreateInlineGroup(rx, cy,
+         m_BtnTPUp, m_BtnTPDn,
+         INLINE_LABEL_W, sym_edt_w)) return false;
+   int rx2 = cx + sym_col_w + COL_GAP;
+   if(!CreateInlineGroup(rx2, cy,
          m_LblSL, "SL",
          m_EdtSL, FormatPoints(g_state.sl_points),
-         m_BtnSLUp, m_BtnSLDn)) return false;
+         m_BtnSLUp, m_BtnSLDn,
+         INLINE_LABEL_W, sym_edt_w)) return false;
    cy += ROW_H + SECTION_GAP;
 
-   // ── Comment ────────────────────────────────────────────────────
-   // ── Action buttons: 2-column grid ──────────────────────────────
-   int btn_w = (m_content_w - 4) / 2;
+   // ── Row 3: Sell | BE | Buy (3-column) ──────────────────────────
+   int sell_buy_w = 145;
+   int be_gap     = 2;
+   int be_w       = m_content_w - sell_buy_w * 2 - be_gap * 2;
 
    if(!m_BtnSell.Create(chart, name + "_btn_sell", subwin,
-      cx, cy, cx + btn_w, cy + ACTION_BTN_H)) return false;
+      cx, cy, cx + sell_buy_w, cy + ACTION_BTN_H)) return false;
    m_BtnSell.Text("Sell");
    m_BtnSell.ColorBackground(CLR_SELL_BG);
    m_BtnSell.Color(clrWhite);
-   m_BtnSell.ColorBorder(C'210,50,40');
+   m_BtnSell.ColorBorder(clrWhite);
    if(!Add(m_BtnSell)) return false;
 
+   int be_x = cx + sell_buy_w + be_gap;
+   if(!m_BtnBE.Create(chart, name + "_btn_be", subwin,
+      be_x, cy, be_x + be_w, cy + ACTION_BTN_H)) return false;
+   m_BtnBE.Text("BE");
+   m_BtnBE.ColorBackground(CLR_BE_BG);
+   m_BtnBE.Color(clrWhite);
+   m_BtnBE.ColorBorder(clrWhite);
+   if(!Add(m_BtnBE)) return false;
+
+   int buy_x = be_x + be_w + be_gap;
    if(!m_BtnBuy.Create(chart, name + "_btn_buy", subwin,
-      cx + btn_w + 4, cy, cx + m_content_w, cy + ACTION_BTN_H)) return false;
+      buy_x, cy, cx + m_content_w, cy + ACTION_BTN_H)) return false;
    m_BtnBuy.Text("Buy");
    m_BtnBuy.ColorBackground(CLR_BUY_BG);
    m_BtnBuy.Color(clrWhite);
-   m_BtnBuy.ColorBorder(C'0,180,0');
+   m_BtnBuy.ColorBorder(clrWhite);
    if(!Add(m_BtnBuy)) return false;
    cy += ACTION_BTN_H + ACTION_BTN_ROW_GAP;
+
+   // ── Row 4: Sell Pending | Buy Pending ──────────────────────────
+   int btn_w = (m_content_w - 4) / 2;
 
    if(!m_BtnSellPending.Create(chart, name + "_btn_sellp", subwin,
       cx, cy, cx + btn_w, cy + ACTION_BTN_H)) return false;
    m_BtnSellPending.Text("Sell Pending");
    m_BtnSellPending.ColorBackground(CLR_SELL_BG);
    m_BtnSellPending.Color(clrWhite);
-   m_BtnSellPending.ColorBorder(C'210,50,40');
+   m_BtnSellPending.ColorBorder(clrWhite);
    if(!Add(m_BtnSellPending)) return false;
 
    if(!m_BtnBuyPending.Create(chart, name + "_btn_buyp", subwin,
@@ -235,75 +251,56 @@ bool CLotForgePanel::CreatePanel(const long chart, const string name,
    m_BtnBuyPending.Text("Buy Pending");
    m_BtnBuyPending.ColorBackground(CLR_BUY_BG);
    m_BtnBuyPending.Color(clrWhite);
-   m_BtnBuyPending.ColorBorder(C'0,180,0');
+   m_BtnBuyPending.ColorBorder(clrWhite);
    if(!Add(m_BtnBuyPending)) return false;
    cy += ACTION_BTN_H + ACTION_BTN_ROW_GAP;
 
-   // ── Row: BE | Trailing ─────────────────────────────────────────
-   //  BE is amber, Trailing is purple — visually distinct from trade-side buttons
-   if(!m_BtnBE.Create(chart, name + "_btn_be", subwin,
-      cx, cy, cx + btn_w, cy + ACTION_BTN_H)) return false;
-   m_BtnBE.Text("BE");
-   m_BtnBE.ColorBackground(CLR_BE_BG);
-   m_BtnBE.Color(clrWhite);
-   m_BtnBE.ColorBorder(CLR_BE_BORDER);
-   if(!Add(m_BtnBE)) return false;
+   // ── Row 5: Auto BE | Auto Trailing (same style as Cancel/Send) ──
+   {
+    string chk_be_text    = g_state.break_even_enabled    ? "[✓] Auto BE"      : "[ ] Auto BE";
+    string chk_trail_text = g_state.trailing_stop_enabled ? "[✓] Auto Trailing" : "[ ] Auto Trailing";
 
-   if(!m_BtnTrailing.Create(chart, name + "_btn_trail", subwin,
-      cx + btn_w + 4, cy, cx + m_content_w, cy + ACTION_BTN_H)) return false;
-   m_BtnTrailing.Text("Trailing");
-   m_BtnTrailing.ColorBackground(CLR_TRAILING_BG);
-   m_BtnTrailing.Color(clrWhite);
-   m_BtnTrailing.ColorBorder(CLR_TRAILING_BORDER);
-   if(!Add(m_BtnTrailing)) return false;
+    if(!m_ChkAutoBE.Create(chart, name + "_chk_autobe", subwin,
+       cx, cy, cx + btn_w, cy + ACTION_BTN_H)) return false;
+    m_ChkAutoBE.Text(chk_be_text);
+    m_ChkAutoBE.FontSize(9);
+    m_ChkAutoBE.ColorBackground(g_state.break_even_enabled ? CLR_CHK_ON_BG : CLR_NEUTRAL_BG);
+    m_ChkAutoBE.Color(g_state.break_even_enabled ? clrWhite : clrBlack);
+    m_ChkAutoBE.ColorBorder(CLR_NEUTRAL_BORDER);
+    if(!Add(m_ChkAutoBE)) return false;
+
+    if(!m_ChkAutoTrailing.Create(chart, name + "_chk_autotrail", subwin,
+       cx + btn_w + 4, cy, cx + m_content_w, cy + ACTION_BTN_H)) return false;
+    m_ChkAutoTrailing.Text(chk_trail_text);
+    m_ChkAutoTrailing.FontSize(9);
+    m_ChkAutoTrailing.ColorBackground(g_state.trailing_stop_enabled ? CLR_CHK_ON_BG : CLR_NEUTRAL_BG);
+    m_ChkAutoTrailing.Color(g_state.trailing_stop_enabled ? clrWhite : clrBlack);
+    m_ChkAutoTrailing.ColorBorder(CLR_NEUTRAL_BORDER);
+    if(!Add(m_ChkAutoTrailing)) return false;
+   }
    cy += ACTION_BTN_H + ACTION_BTN_ROW_GAP;
 
-   // ── Row: Auto BE | Auto Trailing (real toggle checkboxes) ──────
-   //  CButton styled as checkbox: text shows [ ] / [✓], bg shows off/on color
-   string chk_be_text   = g_state.break_even_enabled    ? "[✓] Auto BE"      : "[ ] Auto BE";
-   string chk_trail_text= g_state.trailing_stop_enabled ? "[✓] Auto Trailing" : "[ ] Auto Trailing";
-
-   // ── Row: Auto BE | Auto Trailing ─────────────────────────────
-   //  v1.09: promoted to ACTION_BTN_H (28) for visual height consistency
-   if(!m_ChkAutoBE.Create(chart, name + "_chk_autobe", subwin,
-      cx, cy, cx + btn_w, cy + ACTION_BTN_H)) return false;
-   m_ChkAutoBE.Text(chk_be_text);
-   m_ChkAutoBE.FontSize(8);
-   m_ChkAutoBE.ColorBackground(g_state.break_even_enabled ? CLR_CHK_ON_BG : CLR_CHK_OFF_BG);
-   m_ChkAutoBE.Color(g_state.break_even_enabled ? clrWhite : clrBlack);
-   m_ChkAutoBE.ColorBorder(C'130,140,160');
-   if(!Add(m_ChkAutoBE)) return false;
-
-   if(!m_ChkAutoTrailing.Create(chart, name + "_chk_autotrail", subwin,
-      cx + btn_w + 4, cy, cx + m_content_w, cy + ACTION_BTN_H)) return false;
-   m_ChkAutoTrailing.Text(chk_trail_text);
-   m_ChkAutoTrailing.FontSize(8);
-   m_ChkAutoTrailing.ColorBackground(g_state.trailing_stop_enabled ? CLR_CHK_ON_BG : CLR_CHK_OFF_BG);
-   m_ChkAutoTrailing.Color(g_state.trailing_stop_enabled ? clrWhite : clrBlack);
-   m_ChkAutoTrailing.ColorBorder(C'130,140,160');
-   if(!Add(m_ChkAutoTrailing)) return false;
-   cy += ACTION_BTN_H + ACTION_BTN_ROW_GAP;
-
-   // ── Row: Algo Trading (full-width toggle row — same family as Auto BE/Trailing)
+   // ── Row 6: Algo Trading (same style as Cancel/Send, checkbox) ──
    {
     string algo_text = g_state.algo_trading_ui_enabled ? "[✓] Algo Trading" : "[ ] Algo Trading";
     if(!m_BtnAlgoTrading.Create(chart, name + "_btn_algo", subwin,
        cx, cy, cx + m_content_w, cy + ACTION_BTN_H)) return false;
     m_BtnAlgoTrading.Text(algo_text);
     m_BtnAlgoTrading.FontSize(9);
-    m_BtnAlgoTrading.ColorBackground(g_state.algo_trading_ui_enabled ? CLR_CHK_ON_BG : CLR_CHK_OFF_BG);
+    m_BtnAlgoTrading.ColorBackground(g_state.algo_trading_ui_enabled ? CLR_CHK_ON_BG : CLR_NEUTRAL_BG);
     m_BtnAlgoTrading.Color(g_state.algo_trading_ui_enabled ? clrWhite : clrBlack);
-    m_BtnAlgoTrading.ColorBorder(C'130,140,160');
+    m_BtnAlgoTrading.ColorBorder(CLR_NEUTRAL_BORDER);
     if(!Add(m_BtnAlgoTrading)) return false;
    }
    cy += ACTION_BTN_H + ACTION_BTN_ROW_GAP;
 
-   // ── Row: Cancel | Send (always the final row) ──────────────────
+   // ── Row 7: Cancel | Send ───────────────────────────────────────
    if(!m_BtnCancel.Create(chart, name + "_btn_cancel", subwin,
       cx, cy, cx + btn_w, cy + ACTION_BTN_H)) return false;
    m_BtnCancel.Text("Cancel");
    m_BtnCancel.ColorBackground(CLR_NEUTRAL_BG);
    m_BtnCancel.Color(clrBlack);
+   m_BtnCancel.ColorBorder(CLR_NEUTRAL_BORDER);
    if(!Add(m_BtnCancel)) return false;
 
    if(!m_BtnSend.Create(chart, name + "_btn_send", subwin,
@@ -311,17 +308,10 @@ bool CLotForgePanel::CreatePanel(const long chart, const string name,
    m_BtnSend.Text("Send");
    m_BtnSend.ColorBackground(CLR_NEUTRAL_BG);
    m_BtnSend.Color(clrBlack);
+   m_BtnSend.ColorBorder(CLR_NEUTRAL_BORDER);
    if(!Add(m_BtnSend)) return false;
 
-
    // ── Apply two-blue chrome AFTER all controls are added ─────────
-   //  CAppDialog caption (title bar) is OBJ_EDIT named <n>Caption —
-   //  not OBJ_RECTANGLE_LABEL. Colors applied here (post-Add) are
-   //  safe from being reset by subsequent Add() calls.
-   //    OBJ_RECTANGLE_LABEL <n>ClientBack → inner body (lighter blue)
-   //    OBJ_RECTANGLE_LABEL <n>*          → outer frame (dark blue)
-   //    OBJ_EDIT            <n>Caption    → title bar text strip (dark blue)
-   //    OBJ_BUTTON          <n>Min/Close/Back → window controls (gray)
    {
     string dlg_n  = Name();
     int    n_objs = ObjectsTotal(chart, subwin, -1);
@@ -347,7 +337,6 @@ bool CLotForgePanel::CreatePanel(const long chart, const string name,
          }
        else if(otype == OBJ_EDIT)
          {
-          // Caption bar (OBJ_EDIT) — dark blue background, white text
           if(sfx == "Caption")
             {
              ObjectSetInteger(chart, obj_n, OBJPROP_BGCOLOR,      CLR_TITLE_BG);
@@ -405,7 +394,7 @@ void CLotForgePanel::RefreshValues(void)
 void CLotForgePanel::ApplyActionStyle(CButton &btn, const color base_clr, const bool selected)
   {
    btn.ColorBackground(base_clr);
-   btn.ColorBorder(selected ? CLR_SELECTED_BORDER : base_clr);
+   btn.ColorBorder(selected ? CLR_SELECTED_BORDER : clrWhite);
   }
 
 void CLotForgePanel::RefreshActionButtons(void)
@@ -415,9 +404,12 @@ void CLotForgePanel::RefreshActionButtons(void)
    ApplyActionStyle(m_BtnSellPending, CLR_SELL_BG, g_state.action == ACTION_SELL_PENDING);
    ApplyActionStyle(m_BtnBuyPending,  CLR_BUY_BG,  g_state.action == ACTION_BUY_PENDING);
 
+   // Cancel/Send: neutral border, not white
    color cs = (g_state.action != ACTION_NONE) ? C'180,190,208' : CLR_NEUTRAL_BG;
-   ApplyActionStyle(m_BtnCancel, cs, false);
-   ApplyActionStyle(m_BtnSend,   cs, false);
+   m_BtnCancel.ColorBackground(cs);
+   m_BtnCancel.ColorBorder(CLR_NEUTRAL_BORDER);
+   m_BtnSend.ColorBackground(cs);
+   m_BtnSend.ColorBorder(CLR_NEUTRAL_BORDER);
 
    RefreshBETrailingButtons();
   }
@@ -433,19 +425,19 @@ void CLotForgePanel::RefreshBETrailingButtons(void)
    // Auto BE checkbox
    bool be_on = g_state.break_even_enabled;
    m_ChkAutoBE.Text(be_on ? "[✓] Auto BE" : "[ ] Auto BE");
-   m_ChkAutoBE.ColorBackground(be_on ? CLR_CHK_ON_BG : CLR_CHK_OFF_BG);
+   m_ChkAutoBE.ColorBackground(be_on ? CLR_CHK_ON_BG : CLR_NEUTRAL_BG);
    m_ChkAutoBE.Color(be_on ? clrWhite : clrBlack);
 
    // Auto Trailing checkbox
    bool trail_on = g_state.trailing_stop_enabled;
    m_ChkAutoTrailing.Text(trail_on ? "[✓] Auto Trailing" : "[ ] Auto Trailing");
-   m_ChkAutoTrailing.ColorBackground(trail_on ? CLR_CHK_ON_BG : CLR_CHK_OFF_BG);
+   m_ChkAutoTrailing.ColorBackground(trail_on ? CLR_CHK_ON_BG : CLR_NEUTRAL_BG);
    m_ChkAutoTrailing.Color(trail_on ? clrWhite : clrBlack);
 
-   // Algo Trading toggle row
+   // Algo Trading checkbox
    bool algo_on = g_state.algo_trading_ui_enabled;
    m_BtnAlgoTrading.Text(algo_on ? "[✓] Algo Trading" : "[ ] Algo Trading");
-   m_BtnAlgoTrading.ColorBackground(algo_on ? CLR_CHK_ON_BG : CLR_CHK_OFF_BG);
+   m_BtnAlgoTrading.ColorBackground(algo_on ? CLR_CHK_ON_BG : CLR_NEUTRAL_BG);
    m_BtnAlgoTrading.Color(algo_on ? clrWhite : clrBlack);
   }
 

@@ -130,22 +130,25 @@ const string PANEL_NAME            = "LotForgeMgr";            // nome interno d
 const string GV_PFX               = "LFG_";  // terminal GV prefix for chart-change save
 
 // ── Phase 6.1: CAppDialog compact layout ──────────────────────────
-const int    PANEL_W               = 340;
-const int    PANEL_H               = 328;   // v1.09: +Algo Trading row (+30) + Auto rows unified (+6)
+const int    PANEL_W               = 350;
+const int    PANEL_H               = 390;   // v2.1: +Auto BE/Trailing row
 
-const int    ROW_H                 = 22;   // v1.07: slightly taller rows
-const int    ROW_GAP               = 2;    // tight like V1.07
-const int    SECTION_GAP           = 5;    // minimal gap before comment
-const int    LABEL_W               = 52;   // v1.07: slightly wider label column
-const int    EDIT_W                = 97;   // fills column — m_content_w=PANEL_W-6 (symmetric 3px margins)
-const int    EDIT_H                = 22;   // v1.07: match ROW_H so edits fill row fully
-const int    SPIN_W                = 14;
-const int    SPIN_H                = 10;
+const int    ROW_H                 = 45;   // v2.0: bigger touch-friendly rows
+const int    ROW_GAP               = 2;
+const int    SECTION_GAP           = 5;
+const int    RISK_LABEL_W          = 55;   // v2.1: same as INLINE_LABEL_W for row alignment
+const int    RISK_EDIT_W           = 93;   // v2.1: matches inline edit width for symmetry
+const int    INLINE_LABEL_W        = 55;   // v2.0: Entry/TP/SL label width
+const int    LABEL_W               = 55;   // compat alias
+const int    EDIT_W                = 94;   // compat alias (unused in new layout)
+const int    EDIT_H                = 45;   // v2.0: match ROW_H
+const int    SPIN_W                = 17;   // v2.0: wider spin buttons
+const int    SPIN_H                = 22;   // v2.0: half of ROW_H
 const int    COL_GAP               = 4;
 
-const int    ACTION_BTN_H          = 28;
+const int    ACTION_BTN_H          = 45;   // v2.0: taller action buttons
 const int    ACTION_BTN_ROW_GAP    = 2;
-const int    COMMENT_BOX_H         = 22;
+const int    COMMENT_BOX_H         = 0;    // v2.0: comment removed
 
 const int    DRAG_THRESHOLD_PX     = 4;
 const int    LINE_HIT_TOL_PX       = 9;
@@ -603,8 +606,10 @@ private:
    bool           CreateInlineGroup(const int x, const int y,
                      CButton &lbl, const string lbl_text,
                      CEdit &edt, const string edt_text,
-                     CButton &btn_up, CButton &btn_dn);
-   bool           CreateRiskModeGroup(const int x, const int y);
+                     CButton &btn_up, CButton &btn_dn,
+                     const int lbl_w, const int edt_w);
+   bool           CreateRiskModeGroup(const int x, const int y,
+                     const int lbl_w, const int edt_w);
    void           SyncEditableFieldsToState(const bool include_primary = true);
 
 public:
