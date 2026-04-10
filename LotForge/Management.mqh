@@ -807,9 +807,9 @@ void UpdateManagedTradeMarkers(const ulong ticket)
          if(balance > 0.0)
             tp_pct = NormalizeDouble(tp_money / balance * 100.0, 2);
         }
-      string tp_text = StringFormat("TP %s | +$%.2f", FormatPrice(tp), tp_money);
+      string tp_text = StringFormat("TP %s l +$%.2f", FormatPrice(tp), tp_money);
       if(tp_pct > 0.0)
-         tp_text += StringFormat(" | %.2f%%", tp_pct);
+         tp_text += StringFormat(" l %.2f%%", tp_pct);
 
       bool tp_above = is_buy;
       UpdateOpenTradeMarker(tk_str + "_tp", tp_text, tp, tp_above,
@@ -830,9 +830,9 @@ void UpdateManagedTradeMarkers(const ulong ticket)
          if(balance > 0.0)
             sl_pct = NormalizeDouble(sl_money / balance * 100.0, 2);
         }
-      string sl_text = StringFormat("SL %s | -$%.2f", FormatPrice(sl), sl_money);
+      string sl_text = StringFormat("SL %s l -$%.2f", FormatPrice(sl), sl_money);
       if(sl_pct > 0.0)
-         sl_text += StringFormat(" | %.2f%%", sl_pct);
+         sl_text += StringFormat(" l %.2f%%", sl_pct);
 
       bool sl_above = !is_buy;
       UpdateOpenTradeMarker(tk_str + "_sl", sl_text, sl, sl_above,
@@ -859,7 +859,7 @@ void UpdateManagedTradeMarkers(const ulong ticket)
       if(CalcNetRewardMoneyForMove(open_price, mid_price, volume, is_buy, mid_money, mid_reason))
          mid_money = NormalizeDouble(mid_money, 2);
 
-      string mid_text = StringFormat("%.0f%% TP | %s | +$%.2f",
+      string mid_text = StringFormat("%.0f%% TP l %s l +$%.2f",
                                       partial_pct, FormatPrice(mid_price), mid_money);
 
       bool mid_above = is_buy;
@@ -896,11 +896,11 @@ void UpdateManagedTradeMarkers(const ulong ticket)
         }
       string be_text;
       if(be_money > 0.001)
-         be_text = StringFormat("BE %s | +$%.2f", FormatPrice(be_price), be_money);
+         be_text = StringFormat("BE %s l +$%.2f", FormatPrice(be_price), be_money);
       else
          be_text = StringFormat("BE %s", FormatPrice(be_price));
       if(be_pct > 0.001)
-         be_text += StringFormat(" | +%.2f%%", be_pct);
+         be_text += StringFormat(" l +%.2f%%", be_pct);
 
       // BE sits on the entry side: BUY → above_line=false (below entry), SELL → above_line=true
       bool be_above = !is_buy;
