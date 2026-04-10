@@ -131,7 +131,7 @@ const string GV_PFX               = "LFG_";  // terminal GV prefix for chart-cha
 
 // ── Phase 6.1: CAppDialog compact layout ──────────────────────────
 const int    PANEL_W               = 350;
-const int    PANEL_H               = 390;   // v2.1: +Auto BE/Trailing row
+const int    PANEL_H               = 365;   // keeps a small bottom blue margin under Cancel/Send
 
 const int    ROW_H                 = 45;   // v2.0: bigger touch-friendly rows
 const int    ROW_GAP               = 2;
