@@ -207,6 +207,22 @@ double SymbolVolumeStepCached()
    return 0.01;
   }
 
+double EffectiveVolumeStep()
+  {
+   double step = SymbolVolumeStepCached();
+   if(step <= 0.0)
+      return 0.01;
+
+   double min_volume = SymbolVolumeMinCached();
+
+   // Some symbols expose min volume 0.1 but still accept cent lots like 0.11/0.15.
+   // Keep the UI/trade sizing in 0.01 increments for that common contract pattern.
+   if(step >= 0.1 - 1e-9 && min_volume <= 0.1 + 1e-9)
+      return 0.01;
+
+   return step;
+  }
+
 double SymbolTickSizeCached()
   {
    if(g_symbol_metadata.valid &&
@@ -264,7 +280,7 @@ int PriceDigits()
 
 int VolumeDigits()
   {
-   double step = SymbolVolumeStepCached();
+   double step = EffectiveVolumeStep();
    if(step <= 0.0) return 2;
    int d = 0;
    double v = step;
@@ -279,13 +295,25 @@ double NormalizeVolumeValue(const double volume)
   {
    double mn = SymbolVolumeMinCached();
    double mx = SymbolVolumeMaxCached();
-   double st = SymbolVolumeStepCached();
+   double st = EffectiveVolumeStep();
    double v = MathMax(mn, MathMin(mx, MathRound(volume / st) * st));
    return NormalizeDouble(v, VolumeDigits());
   }
 
 string FormatLots(const double volume)
-  { return DoubleToString(volume, VolumeDigits()); }
+  {
+   double normalized = NormalizeDouble(volume, 8);
+   int digits = 0;
+   for(int d = 0; d <= 8; d++)
+     {
+      if(MathAbs(normalized - NormalizeDouble(normalized, d)) <= 1e-8)
+        {
+         digits = d;
+         break;
+        }
+     }
+   return DoubleToString(normalized, digits);
+  }
 
 string FormatPrice(const double price)
   { return DoubleToString(price, PriceDigits()); }

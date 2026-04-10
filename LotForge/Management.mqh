@@ -413,7 +413,7 @@ bool TryPartialClose(const ulong ticket)
 
    double lote      = PositionGetDouble(POSITION_VOLUME);
    double lote_min  = SymbolVolumeMinCached();
-   double lote_step = SymbolVolumeStepCached();
+   double lote_step = EffectiveVolumeStep();
 
    double lote_fechar = MathFloor((lote * InpAlgoPartialClosePct / 100.0) / lote_step) * lote_step;
    if(lote_fechar < lote_min)  lote_fechar = lote_min;

@@ -448,6 +448,7 @@ int     SymbolDigitsCached();
 double  SymbolVolumeMinCached();
 double  SymbolVolumeMaxCached();
 double  SymbolVolumeStepCached();
+double  EffectiveVolumeStep();
 double  SymbolTickSizeCached();
 int     SymbolStopsLevelCached();
 int     SymbolFreezeLevelCached();

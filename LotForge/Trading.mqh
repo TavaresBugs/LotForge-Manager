@@ -406,7 +406,7 @@ bool CalcLotsFromRiskMoney(const double entry_price, const double sl_price,
    // ── Normalize to broker constraints ───────────────────────────────
    double vol_min  = SymbolVolumeMinCached();
    double vol_max  = SymbolVolumeMaxCached();
-   double vol_step = SymbolVolumeStepCached();
+   double vol_step = EffectiveVolumeStep();
    int    vol_digits = VolumeDigits();
 
    if(raw_lots < vol_min)
@@ -501,7 +501,7 @@ bool CalcLotsFromRiskPercent(const double entry_price, const double sl_price,
    double raw_lots = risk_money / loss_per_lot;
    double vol_min  = SymbolVolumeMinCached();
    double vol_max  = SymbolVolumeMaxCached();
-   double vol_step = SymbolVolumeStepCached();
+   double vol_step = EffectiveVolumeStep();
 
    double steps     = MathFloor(raw_lots / vol_step);
    double norm_lots = NormalizeDouble(steps * vol_step, VolumeDigits());

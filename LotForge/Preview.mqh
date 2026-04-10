@@ -4,7 +4,7 @@
 
 void AdjustLots(const int direction)
   {
-   double step = SymbolVolumeStepCached();
+   double step = EffectiveVolumeStep();
    g_state.lots = NormalizeVolumeValue(g_state.lots + step * direction);
   }
 
