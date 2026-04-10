@@ -1,8 +1,8 @@
 //+------------------------------------------------------------------+
-//|                              LotForge_Manager.mq5    |
-//|  Phase 6.1 — CAppDialog managed panel rewrite                    |
-//|  v1.08 — SELL preview orientation fix, BE/Trailing panel rows,   |
-//|           right-edge layout tightening                           |
+//|                              LotForge_Manager.mq5                |
+//|  LotForge Manager v1.1                                           |
+//|  CAppDialog managed panel, risk modes Lots/%/Money,              |
+//|  visual preview, managed markers and automated management        |
 //|                                                                  |
 //|  Architecture:                                                   |
 //|  · CLotForgePanel : CAppDialog — managed controls, native drag   |
@@ -12,8 +12,8 @@
 //|  · Status/RR info shown only in preview zone text                |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "6.10"
-#property description "LotForge Manager v1.0"
+#property version   "1.10"
+#property description "LotForge Manager v1.1"
 
 #include <Trade/Trade.mqh>
 #include <Controls/Dialog.mqh>
@@ -88,8 +88,8 @@ input int      InpDeviationPoints      = 20;
 input double   InpDefaultLots          = 0.01;
 input double   InpDefaultSlPoints      = 100.0;
 input double   InpDefaultTpPoints      = 100.0;
-input int      InpEntryStepPoints      = 10;
-input int      InpDistanceStepPoints   = 10;
+input int      InpEntryStepPoints      = 1;
+input int      InpDistanceStepPoints   = 1;
 
 input group "=== Risco ==="
 input RiskMode InpRiskMode             = RISK_MODE_LOTS;
@@ -125,7 +125,7 @@ const string PANEL_PREFIX          = "LFP_";
 const string PREV_PFX              = "LFP_prev_";
 const string MNGD_PFX             = "LFP_mngd_";   // managed open-trade markers
 
-const string PANEL_TITLE           = "LotForge Manager v1.0";
+const string PANEL_TITLE           = "LotForge Manager v1.1";
 const string PANEL_NAME            = "LotForgeMgr";            // nome interno do CAppDialog (sem espaços)
 const string GV_PFX               = "LFG_";  // terminal GV prefix for chart-change save
 

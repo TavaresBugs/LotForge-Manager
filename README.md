@@ -2,18 +2,24 @@
 
 LotForge Manager — painel de dimensionamento de posição e gerenciamento de trades para MetaTrader 5.
 
+## Preview
+
+Referência visual atual do painel:
+
+![LotForge Manager panel preview](docs/images/lotforge-layout.png)
+
 ## Versão atual
 
-- **v1.0** — Lançamento inicial
-  - Position sizing automático (risco %, valor fixo na moeda da conta, lots)
-  - Painel CAppDialog com drag nativo e layout compacto
-  - Preview visual de TP, SL e entrada no gráfico
-  - Gerenciamento automatizado: Break-Even, Trailing Stop, fechamento parcial
-  - Managed Trade Markers — labels flutuantes por ticket (TP, SL, Mid Target, BE) com geometria escalável por zoom
+- **v1.1**
+  - Position sizing em `Lots`, `%` e `Money`
+  - Painel `CAppDialog` redesenhado, com layout compacto e drag nativo
+  - Preview visual de entrada, TP e SL no gráfico
+  - Gerenciamento automatizado com Break-Even, Trailing Stop e parcial
+  - Managed Trade Markers com labels flutuantes por ticket e geometria escalável por zoom
 
 ## Funcionalidades
 
-- **Position Sizing** — calcula lots automatic com base em risco %, valor fixo na moeda da conta, SL, ou lots
+- **Position Sizing** — calcula o volume com base em `Lots`, risco `%`, valor fixo na moeda da conta e distância do `SL`
 - **Painel CAppDialog** — interface com drag nativo, layout compacto de duas colunas
 - **Preview visual** — linhas/zones de TP, SL e entrada no gráfico antes de confirmar a ordem
 - **Gerenciamento automatizado** — Break-Even, Trailing Stop, e fechamento parcial
@@ -42,16 +48,19 @@ Geometria: largura dos markers se ajusta automaticamente ao zoom via `PreviewCan
 
 ## Estrutura do repo
 
-```
-LotForge_Manager.mq5            # EA principal (v1.0)
+``` 
+LotForge_Manager.mq5            # EA principal (v1.1)
+LotForge/                      # Módulos do projeto (.mqh)
+docs/images/lotforge-layout.png # Screenshot de referência do painel
 README.md                       # Este arquivo
 ```
 
 ## Instalação
 
 1. Copie `LotForge_Manager.mq5` para `MQL5/Experts/` do seu terminal MT5
-2. Compile no MetaEditor (F7)
-3. Arraste o EA para qualquer gráfico no MT5
+2. Copie a pasta `LotForge/` para `MQL5/Experts/LotForge/`, preservando a estrutura
+3. Compile `LotForge_Manager.mq5` no MetaEditor (`F7`)
+4. Arraste o EA para qualquer gráfico no MT5
 
 ## Notas
 

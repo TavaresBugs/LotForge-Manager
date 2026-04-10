@@ -122,6 +122,8 @@ bool CLotForgePanel::CreateRiskModeGroup(const int x, const int y,
 void CLotForgePanel::SyncEditableFieldsToState(const bool include_primary)
   {
    double val = 0.0;
+   bool tp_changed = false;
+   bool sl_changed = false;
 
    if(include_primary && ParseDoubleText(m_EdtPrimary.Text(), val))
      {
@@ -137,12 +139,21 @@ void CLotForgePanel::SyncEditableFieldsToState(const bool include_primary)
       g_state.entry_price = (val <= 0.0) ? 0.0 : NormalizePriceValue(val);
 
    if(ParseDoubleText(m_EdtTP.Text(), val))
-      g_state.tp_points = MathMax(0.0, MathRound(val));
+     {
+      double next_tp = MathMax(0.0, MathRound(val));
+      tp_changed = (next_tp != g_state.tp_points);
+      g_state.tp_points = next_tp;
+     }
 
    if(ParseDoubleText(m_EdtSL.Text(), val))
-      g_state.sl_points = MathMax(0.0, MathRound(val));
+     {
+      double next_sl = MathMax(0.0, MathRound(val));
+      sl_changed = (next_sl != g_state.sl_points);
+      g_state.sl_points = next_sl;
+     }
 
-   ArmMarketPriceTargetsFromCurrentPoints();
+   if(tp_changed || sl_changed)
+      ClearMarketPriceTargets();
   }
 
 //+------------------------------------------------------------------+
@@ -751,28 +762,28 @@ void CLotForgePanel::OnClickEntryDn(void)
 void CLotForgePanel::OnClickTPUp(void)
   {
    AdjustDistance(g_state.tp_points, +1);
-   ArmMarketPriceTargetsFromCurrentPoints();
+   ClearMarketPriceTargets();
    QueueUiRefresh();
   }
 
 void CLotForgePanel::OnClickTPDn(void)
   {
    AdjustDistance(g_state.tp_points, -1);
-   ArmMarketPriceTargetsFromCurrentPoints();
+   ClearMarketPriceTargets();
    QueueUiRefresh();
   }
 
 void CLotForgePanel::OnClickSLUp(void)
   {
    AdjustDistance(g_state.sl_points, +1);
-   ArmMarketPriceTargetsFromCurrentPoints();
+   ClearMarketPriceTargets();
    QueueUiRefresh();
   }
 
 void CLotForgePanel::OnClickSLDn(void)
   {
    AdjustDistance(g_state.sl_points, -1);
-   ArmMarketPriceTargetsFromCurrentPoints();
+   ClearMarketPriceTargets();
    QueueUiRefresh();
   }
 
@@ -875,7 +886,7 @@ void CLotForgePanel::OnEndEditTP(void)
    double val;
    if(ParseDoubleText(m_EdtTP.Text(), val))
       g_state.tp_points = MathMax(0.0, MathRound(val));
-   ArmMarketPriceTargetsFromCurrentPoints();
+   ClearMarketPriceTargets();
    EndActiveEdit();
    QueueUiRefresh();
   }
@@ -885,7 +896,7 @@ void CLotForgePanel::OnEndEditSL(void)
    double val;
    if(ParseDoubleText(m_EdtSL.Text(), val))
       g_state.sl_points = MathMax(0.0, MathRound(val));
-   ArmMarketPriceTargetsFromCurrentPoints();
+   ClearMarketPriceTargets();
    EndActiveEdit();
    QueueUiRefresh();
   }
