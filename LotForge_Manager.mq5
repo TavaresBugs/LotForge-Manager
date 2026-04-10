@@ -182,7 +182,7 @@ const color  CLR_BE_BG             = C'200,130,0';    // amber / golden
 const color  CLR_BE_BORDER         = C'160,95,0';     // darker amber border
 const color  CLR_TRAILING_BG       = C'105,45,185';   // deep purple
 const color  CLR_TRAILING_BORDER   = C'75,25,145';    // darker purple border
-const color  CLR_CHK_ON_BG         = C'45,160,70';    // green when enabled
+const color  CLR_CHK_ON_BG         = C'0,153,0';      // same green as Buy / Buy Pending
 const color  CLR_CHK_OFF_BG        = C'185,193,207';  // neutral gray when disabled
 
 // ── 3.5: Cores do renderer de preview ────────────────────────────

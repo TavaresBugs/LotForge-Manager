@@ -47,7 +47,6 @@ bool CLotForgePanel::CreateInlineGroup(const int x, const int y,
    if(!lbl.Create(m_chart_id, m_name + "_lbl_" + lbl_text, m_subwin,
       x, y, x + lbl_w, y + ROW_H)) return false;
    lbl.Text(lbl_text);
-   lbl.FontSize(9);
    lbl.Color(C'110,110,110');
    lbl.ColorBackground(clrWhite);
    if(!Add(lbl)) return false;
@@ -56,7 +55,6 @@ bool CLotForgePanel::CreateInlineGroup(const int x, const int y,
    if(!edt.Create(m_chart_id, m_name + "_edt_" + lbl_text, m_subwin,
       ex, y, ex + edt_w, y + EDIT_H)) return false;
    edt.Text(edt_text);
-   edt.FontSize(9);
    if(!Add(edt)) return false;
 
    int sx = ex + edt_w + 1;
@@ -90,7 +88,6 @@ bool CLotForgePanel::CreateRiskModeGroup(const int x, const int y,
    if(!m_BtnRiskMode.Create(m_chart_id, m_name + "_btn_riskmode", m_subwin,
       x, y, x + lbl_w, y + ROW_H)) return false;
    m_BtnRiskMode.Text(mode_text);
-   m_BtnRiskMode.FontSize(9);
    m_BtnRiskMode.ColorBackground(clrWhite);
    m_BtnRiskMode.Color(clrBlack);
    if(!Add(m_BtnRiskMode)) return false;
@@ -104,7 +101,6 @@ bool CLotForgePanel::CreateRiskModeGroup(const int x, const int y,
    if(!m_EdtPrimary.Create(m_chart_id, m_name + "_edt_primary", m_subwin,
       ex, y, ex + edt_w, y + EDIT_H)) return false;
    m_EdtPrimary.Text(val_text);
-   m_EdtPrimary.FontSize(9);
    if(!Add(m_EdtPrimary)) return false;
 
    int sx = ex + edt_w + 2;
@@ -257,13 +253,12 @@ bool CLotForgePanel::CreatePanel(const long chart, const string name,
 
    // ── Row 5: Auto BE | Auto Trailing (same style as Cancel/Send) ──
    {
-    string chk_be_text    = g_state.break_even_enabled    ? "[✓] Auto BE"      : "[ ] Auto BE";
-    string chk_trail_text = g_state.trailing_stop_enabled ? "[✓] Auto Trailing" : "[ ] Auto Trailing";
+    string chk_be_text    = g_state.break_even_enabled    ? "[X] Auto BE"      : "[ ] Auto BE";
+    string chk_trail_text = g_state.trailing_stop_enabled ? "[X] Auto Trailing" : "[ ] Auto Trailing";
 
     if(!m_ChkAutoBE.Create(chart, name + "_chk_autobe", subwin,
        cx, cy, cx + btn_w, cy + ACTION_BTN_H)) return false;
     m_ChkAutoBE.Text(chk_be_text);
-    m_ChkAutoBE.FontSize(9);
     m_ChkAutoBE.ColorBackground(g_state.break_even_enabled ? CLR_CHK_ON_BG : CLR_NEUTRAL_BG);
     m_ChkAutoBE.Color(g_state.break_even_enabled ? clrWhite : clrBlack);
     m_ChkAutoBE.ColorBorder(CLR_NEUTRAL_BORDER);
@@ -272,7 +267,6 @@ bool CLotForgePanel::CreatePanel(const long chart, const string name,
     if(!m_ChkAutoTrailing.Create(chart, name + "_chk_autotrail", subwin,
        cx + btn_w + 4, cy, cx + m_content_w, cy + ACTION_BTN_H)) return false;
     m_ChkAutoTrailing.Text(chk_trail_text);
-    m_ChkAutoTrailing.FontSize(9);
     m_ChkAutoTrailing.ColorBackground(g_state.trailing_stop_enabled ? CLR_CHK_ON_BG : CLR_NEUTRAL_BG);
     m_ChkAutoTrailing.Color(g_state.trailing_stop_enabled ? clrWhite : clrBlack);
     m_ChkAutoTrailing.ColorBorder(CLR_NEUTRAL_BORDER);
@@ -282,11 +276,10 @@ bool CLotForgePanel::CreatePanel(const long chart, const string name,
 
    // ── Row 6: Algo Trading (same style as Cancel/Send, checkbox) ──
    {
-    string algo_text = g_state.algo_trading_ui_enabled ? "[✓] Algo Trading" : "[ ] Algo Trading";
+    string algo_text = g_state.algo_trading_ui_enabled ? "[X] Algo Trading" : "[ ] Algo Trading";
     if(!m_BtnAlgoTrading.Create(chart, name + "_btn_algo", subwin,
        cx, cy, cx + m_content_w, cy + ACTION_BTN_H)) return false;
     m_BtnAlgoTrading.Text(algo_text);
-    m_BtnAlgoTrading.FontSize(9);
     m_BtnAlgoTrading.ColorBackground(g_state.algo_trading_ui_enabled ? CLR_CHK_ON_BG : CLR_NEUTRAL_BG);
     m_BtnAlgoTrading.Color(g_state.algo_trading_ui_enabled ? clrWhite : clrBlack);
     m_BtnAlgoTrading.ColorBorder(CLR_NEUTRAL_BORDER);
@@ -424,19 +417,19 @@ void CLotForgePanel::RefreshBETrailingButtons(void)
   {
    // Auto BE checkbox
    bool be_on = g_state.break_even_enabled;
-   m_ChkAutoBE.Text(be_on ? "[✓] Auto BE" : "[ ] Auto BE");
+   m_ChkAutoBE.Text(be_on ? "[X] Auto BE" : "[ ] Auto BE");
    m_ChkAutoBE.ColorBackground(be_on ? CLR_CHK_ON_BG : CLR_NEUTRAL_BG);
    m_ChkAutoBE.Color(be_on ? clrWhite : clrBlack);
 
    // Auto Trailing checkbox
    bool trail_on = g_state.trailing_stop_enabled;
-   m_ChkAutoTrailing.Text(trail_on ? "[✓] Auto Trailing" : "[ ] Auto Trailing");
+   m_ChkAutoTrailing.Text(trail_on ? "[X] Auto Trailing" : "[ ] Auto Trailing");
    m_ChkAutoTrailing.ColorBackground(trail_on ? CLR_CHK_ON_BG : CLR_NEUTRAL_BG);
    m_ChkAutoTrailing.Color(trail_on ? clrWhite : clrBlack);
 
    // Algo Trading checkbox
    bool algo_on = g_state.algo_trading_ui_enabled;
-   m_BtnAlgoTrading.Text(algo_on ? "[✓] Algo Trading" : "[ ] Algo Trading");
+   m_BtnAlgoTrading.Text(algo_on ? "[X] Algo Trading" : "[ ] Algo Trading");
    m_BtnAlgoTrading.ColorBackground(algo_on ? CLR_CHK_ON_BG : CLR_NEUTRAL_BG);
    m_BtnAlgoTrading.Color(algo_on ? clrWhite : clrBlack);
   }
