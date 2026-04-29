@@ -33,6 +33,12 @@ void PreviewSnapshot::Clear()
    en_label           = "";
    sl_label           = "";
    tp_label           = "";
+   tp1_price          = 0.0;
+   tp2_price          = 0.0;
+   tp1_line_tooltip   = "";
+   tp2_line_tooltip   = "";
+   tp1_label          = "";
+   tp2_label          = "";
   }
 
 void SymbolRuntimeMetadata::Clear()
@@ -65,6 +71,10 @@ void PreviewFinancialKey::Clear()
    tp_points        = 0.0;
    account_balance  = 0.0;
    metadata_revision = 0;
+   tp_btn_state     = 0;
+   tp1_points       = 0.0;
+   tp2_points       = 0.0;
+   tp1_lot_pct      = 0.0;
   }
 
 void PreviewFinancialState::Clear()
@@ -91,6 +101,13 @@ void PanelState::Init()
    market_sl_price = 0.0;
    market_tp_price = 0.0;
    order_comment      = "";
+   tp_btn_state       = 0;
+   tp1_points         = MathMax(0.0, MathRound(InpDefaultTpPoints));
+   tp2_points         = MathMax(0.0, MathRound(InpDefaultTpPoints + InpTpSplitOffsetPoints));
+   tp1_lot_pct        = MathMin(99.0, MathMax(1.0, InpDefaultTp1Pct));
+   tp2_linked         = true;
+   market_tp1_price   = 0.0;
+   market_tp2_price   = 0.0;
    risk_mode          = InpRiskMode;
    risk_percent       = InpRiskPercent;
    risk_money         = InpRiskMoney;
@@ -158,6 +175,24 @@ int FindManagedTradeMarkerKindObjects(const string tk_str,
   }
 
 //+------------------------------------------------------------------+
+//|  ParseTpExitTagFromComment — recupera preços TP1/TP2 do comment  |
+//|  Formato: "... TP1=1.23456 TP2=1.24567"                          |
+//+------------------------------------------------------------------+
+
+bool ParseTpExitTagFromComment(const string comment, double &tp1_out, double &tp2_out)
+  {
+   tp1_out = 0.0;
+   tp2_out = 0.0;
+   int pos1 = StringFind(comment, "TP1=");
+   if(pos1 < 0) return false;
+   tp1_out = StringToDouble(StringSubstr(comment, pos1 + 4));
+   int pos2 = StringFind(comment, "TP2=");
+   if(pos2 >= 0)
+      tp2_out = StringToDouble(StringSubstr(comment, pos2 + 4));
+   return (tp1_out > 0.0);
+  }
+
+//+------------------------------------------------------------------+
 //|  EnsureManagedState — cria entrada de estado se ainda não existe  |
 //|  Captura risco original na primeira chamada para o ticket.        |
 //+------------------------------------------------------------------+
@@ -186,9 +221,46 @@ void EnsureManagedState(const ulong ticket)
                             ? MathAbs(ms.initial_open_price - ms.initial_sl) / _Point
                             : 0.0;
 
+   ms.initial_volume     = PositionGetDouble(POSITION_VOLUME);
    ms.partial_done       = false;
    ms.trailing_armed     = false;
    ms.algo_managed       = false;
+
+   // ── TP exit system arming ────────────────────────────────────────
+   // Priority 1: pending prices set by ProcessUiSend for this exact send
+   if(g_pending_tp1_price > 0.0)
+     {
+      ms.managed_tp1_price = g_pending_tp1_price;
+      ms.managed_tp2_price = g_pending_tp2_price;
+      ms.tp_exits_enabled  = true;
+      ms.tp1_done          = false;
+      ms.tp2_done          = false;
+      g_pending_tp1_price  = 0.0;   // consume — applies to first new trade only
+      g_pending_tp2_price  = 0.0;
+     }
+   else
+     {
+      // Priority 2: recover from position comment tag on EA reload
+      double rec_tp1 = 0.0, rec_tp2 = 0.0;
+      string cmt = PositionGetString(POSITION_COMMENT);
+      if(ParseTpExitTagFromComment(cmt, rec_tp1, rec_tp2))
+        {
+         ms.managed_tp1_price = rec_tp1;
+         ms.managed_tp2_price = rec_tp2;
+         ms.tp_exits_enabled  = true;
+         // Heuristic: if current volume < initial_volume (partial already closed), mark tp1_done
+         ms.tp1_done = false;
+         ms.tp2_done = false;
+        }
+      else
+        {
+         ms.managed_tp1_price = 0.0;
+         ms.managed_tp2_price = 0.0;
+         ms.tp_exits_enabled  = false;
+         ms.tp1_done          = false;
+         ms.tp2_done          = false;
+        }
+     }
 
    int n = ArraySize(g_managed_trades);
    ArrayResize(g_managed_trades, n + 1);
@@ -239,6 +311,12 @@ void SyncManagedTradeState()
          ArrayResize(g_managed_trades, n);
         }
      }
+
+   // ── 3. Atualizar flag global de TP exits ──────────────────────────
+   g_tp_exits_active = false;
+   for(int i = 0; i < n; i++)
+      if(g_managed_trades[i].tp_exits_enabled)
+        { g_tp_exits_active = true; break; }
   }
 
 //+------------------------------------------------------------------+
@@ -454,6 +532,111 @@ bool TryPartialClose(const ulong ticket)
   }
 
 //+------------------------------------------------------------------+
+//|  TryTpExitClose — fecha parcialmente em TP1 e totalmente em TP2  |
+//|  Substituiu o algo-parcial para trades com tp_exits_enabled.     |
+//+------------------------------------------------------------------+
+
+bool TryTpExitClose(const ulong ticket)
+  {
+   int idx = FindManagedIndex(ticket);
+   if(idx < 0) return false;
+   if(!g_managed_trades[idx].tp_exits_enabled) return false;
+   if(g_managed_trades[idx].tp1_done && g_managed_trades[idx].tp2_done) return false;
+   if(!PositionSelectByTicket(ticket)) return false;
+
+   long   pos_type  = PositionGetInteger(POSITION_TYPE);
+   bool   is_buy    = (pos_type == POSITION_TYPE_BUY);
+   double price     = PositionGetDouble(POSITION_PRICE_CURRENT);
+   double sl        = PositionGetDouble(POSITION_SL);
+   double tp_broker = PositionGetDouble(POSITION_TP);
+   double volume    = PositionGetDouble(POSITION_VOLUME);
+   double vol_step  = EffectiveVolumeStep();
+   double vol_min   = SymbolVolumeMinCached();
+
+   // ── TP1 ───────────────────────────────────────────────────────────
+   if(!g_managed_trades[idx].tp1_done)
+     {
+      double tp1 = g_managed_trades[idx].managed_tp1_price;
+      if(tp1 <= 0.0)
+        { g_managed_trades[idx].tp1_done = true; }   // não configurado — pular
+      else
+        {
+         bool tp1_hit = is_buy ? (price >= tp1) : (price <= tp1);
+         if(tp1_hit)
+           {
+            double close_pct   = MathMax(1.0, MathMin(100.0, InpTP1ClosePct));
+            double init_vol    = g_managed_trades[idx].initial_volume;
+            double tp1_vol_raw = MathFloor((init_vol * close_pct / 100.0) / vol_step) * vol_step;
+            double tp1_vol     = MathMax(vol_min, tp1_vol_raw);
+            // Nunca fechar mais do que o disponível menos o mínimo (manter posição viva para TP2)
+            double max_vol = MathFloor((volume - vol_min) / vol_step) * vol_step;
+            if(tp1_vol > max_vol) tp1_vol = max_vol;
+
+            if(tp1_vol < vol_min)
+              {
+               g_managed_trades[idx].tp1_done = true;
+               Print("[TP1 Exit] #", ticket, " volume insuficiente para parcial. Marcado como feito.");
+              }
+            else if(g_trade.PositionClosePartial(ticket, tp1_vol))
+              {
+               g_managed_trades[idx].tp1_done = true;
+               string msg = StringFormat("TP1 Exit #%d: %.2f lots @ %s", ticket, tp1_vol, FormatPrice(price));
+               SetStatus(msg, true);
+               Print("[TP1 Exit] ", msg);
+               return true;
+              }
+            else
+              {
+               int err = GetLastError();
+               Print("[TP1 Exit] ERRO #", ticket, " err=", err);
+               g_managed_trades[idx].tp1_done = true;   // evitar retry loop
+               return false;
+              }
+           }
+        }
+     }
+
+   // ── TP2 — só após TP1 concluído ───────────────────────────────────
+   if(g_managed_trades[idx].tp1_done && !g_managed_trades[idx].tp2_done)
+     {
+      double tp2 = g_managed_trades[idx].managed_tp2_price;
+      if(tp2 <= 0.0)
+        { g_managed_trades[idx].tp2_done = true; }   // não configurado — broker TP cuida
+      else
+        {
+         bool tp2_hit = is_buy ? (price >= tp2) : (price <= tp2);
+         if(tp2_hit)
+           {
+            double close_pct   = MathMax(1.0, MathMin(100.0, InpTP2ClosePct));
+            double tp2_vol_raw = MathFloor((volume * close_pct / 100.0) / vol_step) * vol_step;
+            double tp2_vol     = MathMax(vol_min, tp2_vol_raw);
+            bool   close_all   = (close_pct >= 100.0 || tp2_vol >= volume - vol_min * 0.5);
+            bool   ok          = close_all ? g_trade.PositionClose(ticket)
+                                           : g_trade.PositionClosePartial(ticket, tp2_vol);
+            if(ok)
+              {
+               g_managed_trades[idx].tp2_done = true;
+               string msg = close_all
+                            ? StringFormat("TP2 Exit #%d: posição fechada @ %s", ticket, FormatPrice(price))
+                            : StringFormat("TP2 Exit #%d: %.2f lots @ %s", ticket, tp2_vol, FormatPrice(price));
+               SetStatus(msg, true);
+               Print("[TP2 Exit] ", msg);
+               return true;
+              }
+            else
+              {
+               Print("[TP2 Exit] ERRO #", ticket, " err=", GetLastError());
+               g_managed_trades[idx].tp2_done = true;
+               return false;
+              }
+           }
+        }
+     }
+
+   return false;
+  }
+
+//+------------------------------------------------------------------+
 //|  TryTrailingStop — avança trailing se condições forem atendidas  |
 //|  Nunca piora o stop. Só atua após BE se InpTrailingRequiresBE.   |
 //+------------------------------------------------------------------+
@@ -561,9 +744,14 @@ void RunAutomatedTradeManagement()
       if(auto_trail_on || is_algo)
          TryTrailingStop(t);
 
-      // ── 4. Parcial (apenas Algo; nunca bloqueia BE/trailing) ──────
-      if(is_algo)
+      // ── 4. Parcial Algo (bloqueado quando TP exits ativo no trade) ──
+      bool tp_exits = g_managed_trades[i].tp_exits_enabled;
+      if(is_algo && !tp_exits)
          TryPartialClose(t);
+
+      // ── 5. TP Exit System (TP1/TP2 managed partial closes) ──────────
+      if(tp_exits)
+         TryTpExitClose(t);
      }
   }
 
@@ -632,7 +820,9 @@ bool UpdateOpenTradeMarkerGeometryOnly(const string obj_id,
       return true;
      }
 
-   ObjectSetInteger(0, txt_n, OBJPROP_YDISTANCE, py + (above_line ? -2 : 2));
+   ObjectSetInteger(0, txt_n, OBJPROP_ANCHOR,
+                    above_line ? ANCHOR_RIGHT_LOWER : ANCHOR_RIGHT_UPPER);
+   ObjectSetInteger(0, txt_n, OBJPROP_YDISTANCE, py + (above_line ? -4 : 4));
    return true;
   }
 
@@ -665,11 +855,12 @@ void UpdateOpenTradeMarker(const string obj_id,
       ObjectSetInteger(0, txt_n, OBJPROP_HIDDEN,     false);
       ObjectSetInteger(0, txt_n, OBJPROP_BACK,       false);
       ObjectSetInteger(0, txt_n, OBJPROP_CORNER,     CORNER_RIGHT_UPPER);
-      ObjectSetInteger(0, txt_n, OBJPROP_ANCHOR,     ANCHOR_RIGHT);
       ApplyHandleLabelFont(txt_n);
      }
    ObjectSetInteger(0, txt_n, OBJPROP_XDISTANCE, 5);
-   ObjectSetInteger(0, txt_n, OBJPROP_YDISTANCE, py + (above_line ? -2 : 2));
+   ObjectSetInteger(0, txt_n, OBJPROP_ANCHOR,
+                    above_line ? ANCHOR_RIGHT_LOWER : ANCHOR_RIGHT_UPPER);
+   ObjectSetInteger(0, txt_n, OBJPROP_YDISTANCE, py + (above_line ? -4 : 4));
    ObjectSetString(0,  txt_n, OBJPROP_TEXT,      text);
    ObjectSetString(0,  txt_n, OBJPROP_TOOLTIP,   text);
    ObjectSetInteger(0, txt_n, OBJPROP_COLOR,     txt_clr);
@@ -683,10 +874,27 @@ void EraseManagedTradeMarkers(const ulong ticket)
   {
    string pfx = MNGD_PFX + IntegerToString(ticket) + "_";
    string tk_str = IntegerToString(ticket);
-   string kinds[] = {"tp", "sl", "mid", "be"};
+   string kinds[] = {"tp", "sl", "mid", "be", "tp1exit", "tp2exit"};
    int cnt = ArraySize(kinds);
    for(int i = 0; i < cnt; i++)
       EraseManagedTradeMarkerKind(tk_str, kinds[i]);
+   // Release any adopted user line (clear tooltip tag, don't delete)
+   string erase_marker = "#" + tk_str + " SL";
+   int tot_h = ObjectsTotal(0, 0, OBJ_HLINE);
+   for(int ai = 0; ai < tot_h; ai++)
+     {
+      string n = ObjectName(0, ai, 0, OBJ_HLINE);
+      if(StringFind(n, PANEL_PREFIX) == 0) continue;
+      if(StringFind(ObjectGetString(0, n, OBJPROP_TOOLTIP, 0), erase_marker) == 0)
+        {
+         ObjectSetString(0, n, OBJPROP_TOOLTIP, "");
+         ObjectSetInteger(0, n, OBJPROP_SELECTABLE, false);
+         break;
+        }
+     }
+   // SL / TP1 drag lines
+   ObjectDelete(0, SLDR_PFX  + tk_str);
+   ObjectDelete(0, TP1DR_PFX + tk_str);
    // Fallback: delete by constructed prefix scan
    for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; i--)
      {
@@ -705,7 +913,7 @@ void EraseAllManagedTradeMarkers()
    for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; i--)
      {
       string n = ObjectName(0, i, 0, -1);
-      if(StringFind(n, MNGD_PFX) == 0)
+      if(StringFind(n, MNGD_PFX) == 0 || StringFind(n, SLDR_PFX) == 0)
          ObjectDelete(0, n);
      }
   }
@@ -748,62 +956,122 @@ void UpdateManagedTradeMarkers(const ulong ticket)
    // mid_price_s calculado apenas quando tp > 0 (inicializado com 0 aqui)
    double mid_price_s = 0.0;
 
-   // ── TP marker ─────────────────────────────────────────────────────
-   if(tp > 0.0)
+   // ── TP markers ────────────────────────────────────────────────────
+   bool tp_exits = (mgd_idx >= 0 && g_managed_trades[mgd_idx].tp_exits_enabled);
+
+   if(tp_exits)
      {
-      // Calcular mid_price_s agora que tp é válido
-      if(is_buy)
-         mid_price_s = NormalizePriceValue(open_price + (tp - open_price) * partial_pct_price_s / 100.0);
-      else
-         mid_price_s = NormalizePriceValue(open_price - (open_price - tp) * partial_pct_price_s / 100.0);
+      // TP exit mode: show TP1/TP2 exit markers; suppress generic tp + mid
+      EraseManagedTradeMarkerKind(tk_str, "tp");
+      EraseManagedTradeMarkerKind(tk_str, "mid");
 
-      double tp_money = 0.0;
-      double tp_pct   = 0.0;
-      string tp_reason;
+      double init_vol  = g_managed_trades[mgd_idx].initial_volume;
+      bool   tp1_done  = g_managed_trades[mgd_idx].tp1_done;
+      bool   tp2_done  = g_managed_trades[mgd_idx].tp2_done;
 
-      if(is_algo && !partial_done && can_split)
+      // ── TP1 exit marker ─────────────────────────────────────────
+      double tp1_price = g_managed_trades[mgd_idx].managed_tp1_price;
+      if(tp1_price > 0.0 && !tp1_done)
         {
-         // Algo ativo, parcial possível.
-         // TP marker mostra apenas o lucro dos lotes RESTANTES no TP final.
-         // O usuário soma mentalmente: mid_profit + final_profit = total real.
-         // (Mostrar cumulativo no TP causava confusão: parecia que 60%+TP > sem-algo)
-         double mid_profit   = 0.0; string mid_r2;
-         double final_profit = 0.0; string final_r;
-         CalcNetRewardMoneyForMove(open_price, mid_price_s,  partial_vol_s,   is_buy, mid_profit,   mid_r2);
-         CalcNetRewardMoneyForMove(open_price, tp,           remaining_vol_s, is_buy, final_profit, final_r);
-
-         tp_money = NormalizeDouble(final_profit, 2);
-         double tp_total = NormalizeDouble(mid_profit + final_profit, 2);
-         if(balance > 0.0)
-            tp_pct = NormalizeDouble(tp_total / balance * 100.0, 2);
-
-         string tp_text = StringFormat("TP %s l +$%.2f (%.0f%% lots) l total: $%.2f",
-                                       FormatPrice(tp), tp_money,
-                                       100.0 - close_pct_s, tp_total);
-         UpdateOpenTradeMarker(tk_str + "_tp", tp_text, tp, is_buy,
+         double close_pct_tp1 = MathMax(1.0, MathMin(100.0, InpTP1ClosePct));
+         double tp1_close_vol = MathFloor((init_vol * close_pct_tp1 / 100.0) / vol_step_s) * vol_step_s;
+         if(tp1_close_vol < vol_step_s) tp1_close_vol = vol_step_s;
+         double tp1_money = 0.0; string tp1_r;
+         CalcNetRewardMoneyForMove(open_price, tp1_price, tp1_close_vol, is_buy, tp1_money, tp1_r);
+         tp1_money = NormalizeDouble(tp1_money, 2);
+         string tp1_text = StringFormat("TP1 - %.0f%% l %.2f l +$%.2f",
+                                        close_pct_tp1, tp1_close_vol, tp1_money);
+         UpdateOpenTradeMarker(tk_str + "_tp1exit", tp1_text, tp1_price, is_buy,
                                CLR_OVL_HANDLE_BG, CLR_PREV_TP_BORDER, CLR_PREV_TP_TEXT);
         }
       else
+         EraseManagedTradeMarkerKind(tk_str, "tp1exit");
+
+      // ── TP2 exit marker ─────────────────────────────────────────
+      double tp2_price = g_managed_trades[mgd_idx].managed_tp2_price;
+      if(tp2_price > 0.0 && !tp2_done)
         {
-         // Sem algo, parcial já feito, ou posição pequena demais para dividir
-         if(CalcNetRewardMoneyForMove(open_price, tp, volume, is_buy, tp_money, tp_reason))
-           {
-            tp_money = NormalizeDouble(tp_money, 2);
-            if(balance > 0.0)
-               tp_pct = NormalizeDouble(tp_money / balance * 100.0, 2);
-           }
-         string tp_text = StringFormat("TP %s l +$%.2f", FormatPrice(tp), tp_money);
-         if(tp_pct > 0.0)
-            tp_text += StringFormat(" l %.2f%%", tp_pct);
-         UpdateOpenTradeMarker(tk_str + "_tp", tp_text, tp, is_buy,
-                               CLR_OVL_HANDLE_BG, CLR_PREV_TP_BORDER, CLR_PREV_TP_TEXT);
+         double close_pct_tp1 = MathMax(1.0, MathMin(100.0, InpTP1ClosePct));
+         double close_pct_tp2 = MathMax(1.0, MathMin(100.0, InpTP2ClosePct));
+         // Estimate remaining volume after TP1
+         double tp1_vol_est   = MathFloor((init_vol * close_pct_tp1 / 100.0) / vol_step_s) * vol_step_s;
+         double est_remaining = tp1_done ? volume
+                                         : MathMax(vol_step_s, init_vol - tp1_vol_est);
+         double tp2_close_vol = MathFloor((est_remaining * close_pct_tp2 / 100.0) / vol_step_s) * vol_step_s;
+         if(tp2_close_vol < vol_step_s) tp2_close_vol = vol_step_s;
+         double tp2_money = 0.0; string tp2_r;
+         CalcNetRewardMoneyForMove(open_price, tp2_price, tp2_close_vol, is_buy, tp2_money, tp2_r);
+         tp2_money = NormalizeDouble(tp2_money, 2);
+         double tp2_pct_of_total = (init_vol > 0.0) ? tp2_close_vol / init_vol * 100.0 : close_pct_tp2;
+         string tp2_text = StringFormat("TP2 - %.0f%% l %.2f l +$%.2f",
+                                        tp2_pct_of_total, tp2_close_vol, tp2_money);
+         UpdateOpenTradeMarker(tk_str + "_tp2exit", tp2_text, tp2_price, is_buy,
+                               CLR_OVL_HANDLE_BG, C'100,180,120', C'20,120,50');
         }
+      else
+         EraseManagedTradeMarkerKind(tk_str, "tp2exit");
      }
    else
-      EraseManagedTradeMarkerKind(tk_str, "tp");
+     {
+      // Standard TP marker (algo or plain)
+      EraseManagedTradeMarkerKind(tk_str, "tp1exit");
+      EraseManagedTradeMarkerKind(tk_str, "tp2exit");
+
+      if(tp > 0.0)
+        {
+         if(is_buy)
+            mid_price_s = NormalizePriceValue(open_price + (tp - open_price) * partial_pct_price_s / 100.0);
+         else
+            mid_price_s = NormalizePriceValue(open_price - (open_price - tp) * partial_pct_price_s / 100.0);
+
+         double tp_money = 0.0;
+         double tp_pct   = 0.0;
+         string tp_reason;
+
+         if(is_algo && !partial_done && can_split)
+           {
+            double mid_profit   = 0.0; string mid_r2;
+            double final_profit = 0.0; string final_r;
+            CalcNetRewardMoneyForMove(open_price, mid_price_s,  partial_vol_s,   is_buy, mid_profit,   mid_r2);
+            CalcNetRewardMoneyForMove(open_price, tp,           remaining_vol_s, is_buy, final_profit, final_r);
+
+            tp_money = NormalizeDouble(final_profit, 2);
+            double tp_total = NormalizeDouble(mid_profit + final_profit, 2);
+            if(balance > 0.0)
+               tp_pct = NormalizeDouble(tp_total / balance * 100.0, 2);
+
+            string tp_text = StringFormat("TP l %.2f l +$%.2f",
+                                          remaining_vol_s, tp_money);
+            UpdateOpenTradeMarker(tk_str + "_tp", tp_text, tp, is_buy,
+                                  CLR_OVL_HANDLE_BG, CLR_PREV_TP_BORDER, CLR_PREV_TP_TEXT);
+           }
+         else
+           {
+            if(CalcNetRewardMoneyForMove(open_price, tp, volume, is_buy, tp_money, tp_reason))
+              {
+               tp_money = NormalizeDouble(tp_money, 2);
+               if(balance > 0.0)
+                  tp_pct = NormalizeDouble(tp_money / balance * 100.0, 2);
+              }
+            string tp_text = StringFormat("TP l %.2f l +$%.2f", volume, tp_money);
+            UpdateOpenTradeMarker(tk_str + "_tp", tp_text, tp, is_buy,
+                                  CLR_OVL_HANDLE_BG, CLR_PREV_TP_BORDER, CLR_PREV_TP_TEXT);
+           }
+        }
+      else
+         EraseManagedTradeMarkerKind(tk_str, "tp");
+     }
+
+   // ── Pre-compute BE state so SL marker is skipped when BE is active ──
+   bool show_be_early = false;
+   if(mgd_idx >= 0 && g_managed_trades[mgd_idx].be_applied && sl > 0.0)
+     {
+      if(is_buy && sl >= open_price)   show_be_early = true;
+      else if(!is_buy && sl <= open_price) show_be_early = true;
+     }
 
    // ── SL marker ─────────────────────────────────────────────────────
-   if(sl > 0.0)
+   if(sl > 0.0 && !show_be_early)
      {
       double sl_money = 0.0;
       double sl_pct   = 0.0;
@@ -814,13 +1082,67 @@ void UpdateManagedTradeMarkers(const ulong ticket)
          if(balance > 0.0)
             sl_pct = NormalizeDouble(sl_money / balance * 100.0, 2);
         }
-      string sl_text = StringFormat("SL %s l -$%.2f", FormatPrice(sl), sl_money);
-      if(sl_pct > 0.0)
-         sl_text += StringFormat(" l %.2f%%", sl_pct);
 
       bool sl_above = !is_buy;
-      UpdateOpenTradeMarker(tk_str + "_sl", sl_text, sl, sl_above,
-                            CLR_OVL_HANDLE_BG, CLR_PREV_SL_BORDER, CLR_PREV_SL_TEXT);
+
+      // ── Check if another managed position shares this SL price ────
+      bool already_handled = false;
+      int  handled_n = ArraySize(g_combined_sl_handled);
+      for(int hi = 0; hi < handled_n; hi++)
+         if(MathAbs(g_combined_sl_handled[hi] - sl) < _Point * 0.5)
+           { already_handled = true; break; }
+
+      if(already_handled)
+        {
+         // Primary ticket already drew the combined marker — erase individual
+         EraseManagedTradeMarkerKind(tk_str, "sl");
+        }
+      else
+        {
+         // Scan for partners with same SL on this symbol
+         double total_sl_money = sl_money;
+         bool   has_partner    = false;
+         int    mgd_n          = ArraySize(g_managed_trades);
+         for(int pi = 0; pi < mgd_n; pi++)
+           {
+            ulong pt = g_managed_trades[pi].ticket;
+            if(pt == ticket) continue;
+            if(!PositionSelectByTicket(pt)) continue;
+            if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+            double p_sl = PositionGetDouble(POSITION_SL);
+            if(MathAbs(p_sl - sl) >= _Point * 0.5) continue;
+            // Partner found
+            has_partner = true;
+            double p_open = PositionGetDouble(POSITION_PRICE_OPEN);
+            double p_vol  = PositionGetDouble(POSITION_VOLUME);
+            bool   p_buy  = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+            double p_risk = 0.0; string p_r;
+            if(CalcNetRiskMoneyForMove(p_open, p_sl, p_vol, p_buy, p_risk, p_r))
+               total_sl_money = NormalizeDouble(total_sl_money + p_risk, 2);
+           }
+         // Restore current position selection
+         PositionSelectByTicket(ticket);
+
+         if(has_partner)
+           {
+            // Register SL as handled so partners skip their individual markers
+            ArrayResize(g_combined_sl_handled, handled_n + 1);
+            g_combined_sl_handled[handled_n] = sl;
+
+            double total_pct = 0.0;
+            if(balance > 0.0)
+               total_pct = NormalizeDouble(total_sl_money / balance * 100.0, 2);
+            string sl_text = StringFormat("SL l -$%.2f combinado", total_sl_money);
+            UpdateOpenTradeMarker(tk_str + "_sl", sl_text, sl, sl_above,
+                                  CLR_OVL_HANDLE_BG, CLR_PREV_SL_BORDER, CLR_PREV_SL_TEXT);
+           }
+         else
+           {
+            string sl_text = StringFormat("SL l %.2f l -$%.2f", volume, sl_money);
+            UpdateOpenTradeMarker(tk_str + "_sl", sl_text, sl, sl_above,
+                                  CLR_OVL_HANDLE_BG, CLR_PREV_SL_BORDER, CLR_PREV_SL_TEXT);
+           }
+        }
      }
    else
       EraseManagedTradeMarkerKind(tk_str, "sl");
@@ -848,16 +1170,9 @@ void UpdateManagedTradeMarkers(const ulong ticket)
    // ── BE marker ─────────────────────────────────────────────────────
    //  Shows only when position is truly protected (SL on profitable side).
    //  Reflects actual SL level — not necessarily open_price.
-   bool show_be = false;
-   double be_price = 0.0;
-   if(mgd_idx >= 0 && g_managed_trades[mgd_idx].be_applied && sl > 0.0)
-     {
-      // Verify SL is actually on the profitable side
-      if(is_buy && sl >= open_price)
-        { show_be = true; be_price = sl; }
-      else if(!is_buy && sl <= open_price)
-        { show_be = true; be_price = sl; }
-     }
+   //  show_be_early already computed above — reuse to avoid duplicate logic.
+   bool show_be = show_be_early;
+   double be_price = show_be ? sl : 0.0;
 
    if(show_be)
      {
@@ -872,11 +1187,9 @@ void UpdateManagedTradeMarkers(const ulong ticket)
         }
       string be_text;
       if(be_money > 0.001)
-         be_text = StringFormat("BE %s l +$%.2f", FormatPrice(be_price), be_money);
+         be_text = StringFormat("BE l %.2f l +$%.2f", volume, be_money);
       else
-         be_text = StringFormat("BE %s", FormatPrice(be_price));
-      if(be_pct > 0.001)
-         be_text += StringFormat(" l +%.2f%%", be_pct);
+         be_text = "BE";
 
       // BE sits on the entry side: BUY → above_line=false (below entry), SELL → above_line=true
       bool be_above = !is_buy;
@@ -885,6 +1198,137 @@ void UpdateManagedTradeMarkers(const ulong ticket)
      }
    else
       EraseManagedTradeMarkerKind(tk_str, "be");
+
+   // ── TP1 exit drag line ────────────────────────────────────────────
+   if(tp_exits && !g_managed_trades[mgd_idx].tp1_done)
+     {
+      double tp1_drag_price = g_managed_trades[mgd_idx].managed_tp1_price;
+      string tp1dr_name     = TP1DR_PFX + tk_str;
+      string tp1dr_tip      = StringFormat("#%s TP1 Exit — arraste para mover", tk_str);
+
+      if(tp1_drag_price > 0.0)
+        {
+         if(ObjectFind(0, tp1dr_name) < 0)
+           {
+            ObjectCreate(0, tp1dr_name, OBJ_HLINE, 0, 0, tp1_drag_price);
+            ObjectSetInteger(0, tp1dr_name, OBJPROP_COLOR,      CLR_PREV_SL_BORDER);
+            ObjectSetInteger(0, tp1dr_name, OBJPROP_STYLE,      STYLE_DASHDOT);
+            ObjectSetInteger(0, tp1dr_name, OBJPROP_WIDTH,      1);
+            ObjectSetInteger(0, tp1dr_name, OBJPROP_BACK,       false);
+            ObjectSetInteger(0, tp1dr_name, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, tp1dr_name, OBJPROP_SELECTED,   false);
+            ObjectSetInteger(0, tp1dr_name, OBJPROP_HIDDEN,     false);
+            ObjectSetString(0,  tp1dr_name, OBJPROP_TOOLTIP,    tp1dr_tip);
+           }
+         else
+           {
+            if(!g_tp1_drag_active || g_tp1_drag_ticket != g_managed_trades[mgd_idx].ticket)
+               ObjectSetDouble(0, tp1dr_name, OBJPROP_PRICE, tp1_drag_price);
+            ObjectSetInteger(0, tp1dr_name, OBJPROP_COLOR,      CLR_PREV_SL_BORDER);
+            ObjectSetInteger(0, tp1dr_name, OBJPROP_STYLE,      STYLE_DASHDOT);
+            ObjectSetInteger(0, tp1dr_name, OBJPROP_WIDTH,      1);
+            ObjectSetInteger(0, tp1dr_name, OBJPROP_SELECTABLE, false);
+            ObjectSetString(0,  tp1dr_name, OBJPROP_TOOLTIP,    tp1dr_tip);
+           }
+        }
+      else
+         ObjectDelete(0, tp1dr_name);
+     }
+   else
+      ObjectDelete(0, TP1DR_PFX + tk_str);
+
+   // ── SL drag handle — adopt user OBJ_HLINE at SL price, else own SLDR ──
+   // Tag mechanism: adopted line gets our tooltip "#{ticket} SL — ..."
+   // OBJPROP_TOOLTIP is non-visual (hover only) — no visible change to user line.
+   string sldr_name    = SLDR_PFX + tk_str;
+   string adopt_tip    = StringFormat("#%s SL — arraste para modificar | snap %d pts",
+                                      tk_str, InpSlSnapPoints);
+   string adopt_marker = "#" + tk_str + " SL";   // prefix to detect our tag
+   double adopt_tol    = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(adopt_tol <= 0.0) adopt_tol = _Point;
+
+   if(sl > 0.0)
+     {
+      // ── 1. Find already-adopted user line (our tooltip prefix, not SLDR) ─
+      string adopted_name = "";
+      int total_h = ObjectsTotal(0, 0, OBJ_HLINE);
+      for(int ai = 0; ai < total_h; ai++)
+        {
+         string n = ObjectName(0, ai, 0, OBJ_HLINE);
+         if(StringFind(n, PANEL_PREFIX) == 0) continue;
+         if(StringFind(ObjectGetString(0, n, OBJPROP_TOOLTIP, 0), adopt_marker) == 0)
+           { adopted_name = n; break; }
+        }
+
+      // ── 2. Validate existing adoption (price must still match SL) ─────
+      if(adopted_name != "")
+        {
+         bool dragging = (bool)ObjectGetInteger(0, adopted_name, OBJPROP_SELECTED);
+         if(!dragging)
+           {
+            double ln_price = ObjectGetDouble(0, adopted_name, OBJPROP_PRICE);
+            if(MathAbs(ln_price - sl) > adopt_tol)
+              {
+               // SL moved externally — release adoption, keep user line intact
+               ObjectSetString(0, adopted_name, OBJPROP_TOOLTIP, "");
+               ObjectSetInteger(0, adopted_name, OBJPROP_SELECTABLE, false);
+               adopted_name = "";
+              }
+           }
+        }
+
+      // ── 3. Refresh adopted line ────────────────────────────────────────
+      if(adopted_name != "")
+        {
+         ObjectSetInteger(0, adopted_name, OBJPROP_SELECTABLE, true);
+         ObjectSetString(0, adopted_name, OBJPROP_TOOLTIP, adopt_tip);
+         ObjectDelete(0, sldr_name);   // remove our duplicate if any
+        }
+
+      // ── 4. Try to adopt a nearby user line ────────────────────────────
+      if(adopted_name == "")
+        {
+         total_h = ObjectsTotal(0, 0, OBJ_HLINE);
+         for(int ai = 0; ai < total_h; ai++)
+           {
+            string n = ObjectName(0, ai, 0, OBJ_HLINE);
+            if(StringFind(n, PANEL_PREFIX) == 0) continue;   // skip our objects
+            // Skip if already adopted by another position (tooltip contains " SL — ")
+            if(StringFind(ObjectGetString(0, n, OBJPROP_TOOLTIP, 0), " SL — ") >= 0) continue;
+            double lp = ObjectGetDouble(0, n, OBJPROP_PRICE);
+            if(MathAbs(lp - sl) <= adopt_tol)
+              {
+               ObjectSetInteger(0, n, OBJPROP_SELECTABLE, true);
+               ObjectSetString(0, n, OBJPROP_TOOLTIP, adopt_tip);
+               ObjectDelete(0, sldr_name);
+               adopted_name = n;
+               break;
+              }
+           }
+        }
+
+      // ── 5. No user line to adopt — no drag handle created (stealth) ────
+      // Delete any stale SLDR from previous sessions
+      if(adopted_name == "")
+         ObjectDelete(0, sldr_name);
+     }
+   else
+     {
+      // SL = 0 — release any adoption, delete our SLDR
+      int total_h = ObjectsTotal(0, 0, OBJ_HLINE);
+      for(int ai = 0; ai < total_h; ai++)
+        {
+         string n = ObjectName(0, ai, 0, OBJ_HLINE);
+         if(StringFind(n, PANEL_PREFIX) == 0) continue;
+         if(StringFind(ObjectGetString(0, n, OBJPROP_TOOLTIP, 0), adopt_marker) == 0)
+           {
+            ObjectSetString(0, n, OBJPROP_TOOLTIP, "");
+            ObjectSetInteger(0, n, OBJPROP_SELECTABLE, false);
+            break;
+           }
+        }
+      ObjectDelete(0, sldr_name);
+     }
   }
 
 bool UpdateManagedTradeMarkersGeometryOnly(const ulong ticket)
@@ -898,40 +1342,48 @@ bool UpdateManagedTradeMarkersGeometryOnly(const ulong ticket)
    long   pos_type   = PositionGetInteger(POSITION_TYPE);
    bool   is_buy     = (pos_type == POSITION_TYPE_BUY);
 
-   string tk_str = IntegerToString(ticket);
+   string tk_str  = IntegerToString(ticket);
+   int    mgd_idx = FindManagedIndex(ticket);
+   bool   tp_exits = (mgd_idx >= 0 && g_managed_trades[mgd_idx].tp_exits_enabled);
 
-   if(tp > 0.0)
+   // ── TP markers ────────────────────────────────────────────────────
+   if(tp_exits)
      {
-      if(!UpdateOpenTradeMarkerGeometryOnly(tk_str + "_tp", tp, is_buy))
+      // TP1 exit
+      double tp1_price = g_managed_trades[mgd_idx].managed_tp1_price;
+      bool   tp1_done  = g_managed_trades[mgd_idx].tp1_done;
+      if(tp1_price > 0.0 && !tp1_done)
+        {
+         if(!UpdateOpenTradeMarkerGeometryOnly(tk_str + "_tp1exit", tp1_price, is_buy))
+            return false;
+        }
+      else if(ManagedTradeMarkerKindExists(tk_str, "tp1exit"))
+         return false;
+
+      // TP2 exit
+      double tp2_price = g_managed_trades[mgd_idx].managed_tp2_price;
+      bool   tp2_done  = g_managed_trades[mgd_idx].tp2_done;
+      if(tp2_price > 0.0 && !tp2_done)
+        {
+         if(!UpdateOpenTradeMarkerGeometryOnly(tk_str + "_tp2exit", tp2_price, is_buy))
+            return false;
+        }
+      else if(ManagedTradeMarkerKindExists(tk_str, "tp2exit"))
          return false;
      }
-   else if(ManagedTradeMarkerKindExists(tk_str, "tp"))
-      return false;
-
-   if(sl > 0.0)
+   else
      {
-      if(!UpdateOpenTradeMarkerGeometryOnly(tk_str + "_sl", sl, !is_buy))
+      if(tp > 0.0)
+        {
+         if(!UpdateOpenTradeMarkerGeometryOnly(tk_str + "_tp", tp, is_buy))
+            return false;
+        }
+      else if(ManagedTradeMarkerKindExists(tk_str, "tp"))
          return false;
      }
-   else if(ManagedTradeMarkerKindExists(tk_str, "sl"))
-      return false;
 
-   int mgd_idx = FindManagedIndex(ticket);
-   bool partial_already_done = (mgd_idx >= 0 && g_managed_trades[mgd_idx].partial_done);
-   bool show_mid = (InpShowMidTargetBlock && tp > 0.0 && !partial_already_done);
-   if(show_mid)
-     {
-      double partial_pct = MathMax(1.0, MathMin(100.0, InpAlgoPartialTrigger));
-      double mid_price = is_buy
-                         ? NormalizePriceValue(open_price + (tp - open_price) * partial_pct / 100.0)
-                         : NormalizePriceValue(open_price - (open_price - tp) * partial_pct / 100.0);
-      if(!UpdateOpenTradeMarkerGeometryOnly(tk_str + "_mid", mid_price, is_buy))
-         return false;
-     }
-   else if(ManagedTradeMarkerKindExists(tk_str, "mid"))
-      return false;
-
-   bool show_be = false;
+   // ── BE state (suppresses SL marker) ──────────────────────────────
+   bool   show_be  = false;
    double be_price = 0.0;
    if(mgd_idx >= 0 && g_managed_trades[mgd_idx].be_applied && sl > 0.0)
      {
@@ -941,6 +1393,37 @@ bool UpdateManagedTradeMarkersGeometryOnly(const ulong ticket)
         { show_be = true; be_price = sl; }
      }
 
+   // ── SL marker ─────────────────────────────────────────────────────
+   if(!show_be)
+     {
+      if(sl > 0.0)
+        {
+         if(!UpdateOpenTradeMarkerGeometryOnly(tk_str + "_sl", sl, !is_buy))
+            return false;
+        }
+      else if(ManagedTradeMarkerKindExists(tk_str, "sl"))
+         return false;
+     }
+
+   // ── Mid marker (only in non-TP-exit, non-partial mode) ───────────
+   if(!tp_exits)
+     {
+      bool partial_already_done = (mgd_idx >= 0 && g_managed_trades[mgd_idx].partial_done);
+      bool show_mid = (InpShowMidTargetBlock && tp > 0.0 && !partial_already_done);
+      if(show_mid)
+        {
+         double partial_pct = MathMax(1.0, MathMin(100.0, InpAlgoPartialTrigger));
+         double mid_price = is_buy
+                            ? NormalizePriceValue(open_price + (tp - open_price) * partial_pct / 100.0)
+                            : NormalizePriceValue(open_price - (open_price - tp) * partial_pct / 100.0);
+         if(!UpdateOpenTradeMarkerGeometryOnly(tk_str + "_mid", mid_price, is_buy))
+            return false;
+        }
+      else if(ManagedTradeMarkerKindExists(tk_str, "mid"))
+         return false;
+     }
+
+   // ── BE marker ─────────────────────────────────────────────────────
    if(show_be)
      {
       if(!UpdateOpenTradeMarkerGeometryOnly(tk_str + "_be", be_price, !is_buy))
@@ -989,6 +1472,9 @@ bool RefreshManagedTradeMarkersGeometryOnly()
 
 void RefreshAllManagedTradeMarkers()
   {
+   // ── Reset combined-SL tracking for this cycle ─────────────────────
+   ArrayResize(g_combined_sl_handled, 0);
+
    // ── Build set of active tickets ───────────────────────────────────
    int n = ArraySize(g_managed_trades);
    for(int i = 0; i < n; i++)
@@ -1020,20 +1506,25 @@ void RefreshAllManagedTradeMarkers()
 
 void SaveStateForChartChange()
   {
-   GlobalVariableSet(GV_PFX + "valid",  1.0);
-   GlobalVariableSet(GV_PFX + "action", (double)g_state.action);
-   GlobalVariableSet(GV_PFX + "lots",   g_state.lots);
-   GlobalVariableSet(GV_PFX + "rmode",  (double)g_state.risk_mode);
-   GlobalVariableSet(GV_PFX + "rpct",   g_state.risk_percent);
-   GlobalVariableSet(GV_PFX + "rmoney", g_state.risk_money);
-   GlobalVariableSet(GV_PFX + "entry",  g_state.entry_price);
-   GlobalVariableSet(GV_PFX + "sl",     g_state.sl_points);
-   GlobalVariableSet(GV_PFX + "tp",     g_state.tp_points);
-   GlobalVariableSet(GV_PFX + "msl",    g_state.market_sl_price);
-   GlobalVariableSet(GV_PFX + "mtp",    g_state.market_tp_price);
-   GlobalVariableSet(GV_PFX + "px",     (double)g_state.panel_x);
-   GlobalVariableSet(GV_PFX + "py",     (double)g_state.panel_y);
-   GlobalVariableSet(GV_PFX + "mini",   g_state.minimized ? 1.0 : 0.0);
+   GlobalVariableSet(GV_PFX + "valid",      1.0);
+   GlobalVariableSet(GV_PFX + "action",     (double)g_state.action);
+   GlobalVariableSet(GV_PFX + "lots",       g_state.lots);
+   GlobalVariableSet(GV_PFX + "rmode",      (double)g_state.risk_mode);
+   GlobalVariableSet(GV_PFX + "rpct",       g_state.risk_percent);
+   GlobalVariableSet(GV_PFX + "rmoney",     g_state.risk_money);
+   GlobalVariableSet(GV_PFX + "entry",      g_state.entry_price);
+   GlobalVariableSet(GV_PFX + "sl",         g_state.sl_points);
+   GlobalVariableSet(GV_PFX + "tp",         g_state.tp_points);
+   GlobalVariableSet(GV_PFX + "msl",        g_state.market_sl_price);
+   GlobalVariableSet(GV_PFX + "mtp",        g_state.market_tp_price);
+   GlobalVariableSet(GV_PFX + "px",         (double)g_state.panel_x);
+   GlobalVariableSet(GV_PFX + "py",         (double)g_state.panel_y);
+   GlobalVariableSet(GV_PFX + "mini",       g_state.minimized ? 1.0 : 0.0);
+   GlobalVariableSet(GV_PFX + "tpbtnstate", (double)g_state.tp_btn_state);
+   GlobalVariableSet(GV_PFX + "tp1",        g_state.tp1_points);
+   GlobalVariableSet(GV_PFX + "tp2",        g_state.tp2_points);
+   GlobalVariableSet(GV_PFX + "tp1pct",     g_state.tp1_lot_pct);
+   GlobalVariableSet(GV_PFX + "tp2lnk",     g_state.tp2_linked ? 1.0 : 0.0);
   }
 
 bool RestoreStateFromChartChange()
@@ -1042,10 +1533,13 @@ bool RestoreStateFromChartChange()
    if(GlobalVariableGet(GV_PFX + "valid") != 1.0)  return false;
 
    g_state.action       = (TradePanelAction)(int)GlobalVariableGet(GV_PFX + "action");
-   g_state.lots         = GlobalVariableGet(GV_PFX + "lots");
+   g_state.lots         = GlobalVariableCheck(GV_PFX + "lots")  ? GlobalVariableGet(GV_PFX + "lots")  : InpDefaultLots;
+   if(g_state.lots <= 0.0) g_state.lots = NormalizeVolumeValue(InpDefaultLots);
    g_state.risk_mode    = (RiskMode)(int)GlobalVariableGet(GV_PFX + "rmode");
-   g_state.risk_percent = GlobalVariableGet(GV_PFX + "rpct");
+   g_state.risk_percent = GlobalVariableCheck(GV_PFX + "rpct")  ? GlobalVariableGet(GV_PFX + "rpct")  : InpRiskPercent;
+   if(g_state.risk_percent <= 0.0) g_state.risk_percent = InpRiskPercent;
    g_state.risk_money   = GlobalVariableCheck(GV_PFX + "rmoney") ? GlobalVariableGet(GV_PFX + "rmoney") : InpRiskMoney;
+   if(g_state.risk_money <= 0.0) g_state.risk_money = InpRiskMoney;
    g_state.entry_price  = GlobalVariableGet(GV_PFX + "entry");
    g_state.sl_points    = GlobalVariableGet(GV_PFX + "sl");
    g_state.tp_points    = GlobalVariableGet(GV_PFX + "tp");
@@ -1054,6 +1548,16 @@ bool RestoreStateFromChartChange()
    g_state.panel_x      = (int)GlobalVariableGet(GV_PFX + "px");
    g_state.panel_y      = (int)GlobalVariableGet(GV_PFX + "py");
    g_state.minimized    = GlobalVariableGet(GV_PFX + "mini") > 0.5;
+   g_state.tp_btn_state = GlobalVariableCheck(GV_PFX + "tpbtnstate") ? (int)GlobalVariableGet(GV_PFX + "tpbtnstate") : 0;
+   g_state.tp_btn_state = (g_state.tp_btn_state > 0) ? 1 : 0;
+   g_state.tp1_points   = GlobalVariableCheck(GV_PFX + "tp1") ? GlobalVariableGet(GV_PFX + "tp1") : g_state.tp_points;
+   g_state.tp2_points   = GlobalVariableCheck(GV_PFX + "tp2") ? GlobalVariableGet(GV_PFX + "tp2") : g_state.tp_points + InpTpSplitOffsetPoints;
+   g_state.tp1_lot_pct  = GlobalVariableCheck(GV_PFX + "tp1pct") ? GlobalVariableGet(GV_PFX + "tp1pct") : InpDefaultTp1Pct;
+   g_state.tp2_linked   = GlobalVariableCheck(GV_PFX + "tp2lnk") ? (GlobalVariableGet(GV_PFX + "tp2lnk") > 0.5) : true;
+   g_state.market_tp1_price = 0.0;
+   g_state.market_tp2_price = 0.0;
+   if(IsDualTPMode())
+      EnforceDualTpInvariant(false, false);
 
    // Consume snapshot — do not persist beyond this init cycle
    GlobalVariableDel(GV_PFX + "valid");

@@ -23,8 +23,8 @@ string ActionLabel(const TradePanelAction action)
   {
    switch(action)
      {
-      case ACTION_BUY:          return "Buy";
-      case ACTION_SELL:         return "Sell";
+      case ACTION_BUY:          return "Buy (MKT)";
+      case ACTION_SELL:         return "Sell (MKT)";
       case ACTION_BUY_PENDING:  return "Buy Pending";
       case ACTION_SELL_PENDING: return "Sell Pending";
       default:                  return "None";
@@ -47,8 +47,8 @@ string PendingSubtypeLabel(const PendingSubtype subtype)
   {
    switch(subtype)
      {
-      case PENDING_STOP:  return " (Stop)";
-      case PENDING_LIMIT: return " (Limit)";
+      case PENDING_STOP:  return " (SP)";
+      case PENDING_LIMIT: return " (LT)";
       default:            return "";
      }
   }
@@ -58,7 +58,8 @@ string EffectiveActionLabel(const TradePanelAction action,
   {
    if(!IsPendingAction(action)) return ActionLabel(action);
    PendingSubtype st = DerivePendingSubtype(action, entry_price);
-   return ActionLabel(action) + PendingSubtypeLabel(st);
+   string base = IsBuyAction(action) ? "Buy" : "Sell";
+   return base + PendingSubtypeLabel(st);
   }
 //+------------------------------------------------------------------+
 //|  ShortPreviewLabel — condensed label for overlay preview bars     |
@@ -349,10 +350,91 @@ bool ParseDoubleText(string text, double &value)
    return true;
   }
 
+bool IsDualTPMode()
+  { return g_state.tp_btn_state > 0; }
+
+double DualTpGuardrailPoints()
+  {
+   return MathMax(1.0, MathRound(MathMax(1.0, InpTpSplitOffsetPoints)));
+  }
+
+void EnforceDualTpInvariant(const bool tp1_changed,
+                            const bool tp2_changed)
+  {
+   if(!IsDualTPMode())
+      return;
+
+   double min_gap = DualTpGuardrailPoints();
+
+   g_state.tp1_points = MathMax(1.0, MathRound(g_state.tp1_points));
+   g_state.tp2_points = MathMax(1.0, MathRound(g_state.tp2_points));
+
+   double min_tp2_points = MathMax(1.0, g_state.tp1_points + min_gap);
+   if(tp1_changed)
+     {
+      if(g_state.tp2_linked || g_state.tp2_points < min_tp2_points)
+         g_state.tp2_points = min_tp2_points;
+     }
+   else if(tp2_changed)
+     {
+      if(g_state.tp2_points < min_tp2_points)
+         g_state.tp2_points = min_tp2_points;
+     }
+   else if(g_state.tp2_points < min_tp2_points)
+      g_state.tp2_points = min_tp2_points;
+
+   // Re-anchor market prices from points only when not already locked by drag.
+   // When market_tp1/tp2_price > 0, they are the source of truth — do not overwrite.
+   if(IsMarketAction(g_state.action) &&
+      g_state.market_tp1_price <= 0.0 && g_state.market_tp2_price <= 0.0)
+     {
+      bool is_buy = IsBuyAction(g_state.action);
+      double entry_price = CurrentReferencePrice(is_buy);
+      if(entry_price > 0.0)
+        {
+         g_state.market_tp1_price = NormalizePriceValue(
+            is_buy ? entry_price + g_state.tp1_points * _Point
+                   : entry_price - g_state.tp1_points * _Point);
+         g_state.market_tp2_price = NormalizePriceValue(
+            is_buy ? entry_price + g_state.tp2_points * _Point
+                   : entry_price - g_state.tp2_points * _Point);
+        }
+      else
+        {
+         g_state.market_tp1_price = 0.0;
+         g_state.market_tp2_price = 0.0;
+        }
+     }
+  }
+
+double EffectiveStateTp1Price(const TradePanelAction action, const double entry_price)
+  {
+   if(entry_price <= 0.0) return 0.0;
+   if(IsMarketAction(action) && g_state.market_tp1_price > 0.0)
+      return NormalizePriceValue(g_state.market_tp1_price);
+   if(g_state.tp1_points <= 0.0) return 0.0;
+   bool is_buy = IsBuyAction(action);
+   return NormalizePriceValue(is_buy ? entry_price + g_state.tp1_points * _Point
+                                     : entry_price - g_state.tp1_points * _Point);
+  }
+
+double EffectiveStateTp2Price(const TradePanelAction action, const double entry_price)
+  {
+   if(entry_price <= 0.0) return 0.0;
+   if(IsMarketAction(action) && g_state.market_tp2_price > 0.0)
+      return NormalizePriceValue(g_state.market_tp2_price);
+   if(g_state.tp2_points <= 0.0) return 0.0;
+   bool is_buy = IsBuyAction(action);
+   return NormalizePriceValue(is_buy ? entry_price + g_state.tp2_points * _Point
+                                     : entry_price - g_state.tp2_points * _Point);
+  }
+
 void ClearMarketPriceTargets()
   {
-   g_state.market_sl_price = 0.0;
-   g_state.market_tp_price = 0.0;
+   g_state.market_sl_price  = 0.0;
+   g_state.market_tp_price  = 0.0;
+   g_state.market_tp1_price = 0.0;
+   g_state.market_tp2_price = 0.0;
   }
 
 void ArmMarketPriceTargetsFromCurrentPoints()
@@ -384,6 +466,18 @@ void ArmMarketPriceTargetsFromCurrentPoints()
                 : entry_price - g_state.tp_points * _Point);
    else
       g_state.market_tp_price = 0.0;
+
+   if(IsDualTPMode())
+     {
+      g_state.market_tp1_price = (g_state.tp1_points > 0.0)
+         ? NormalizePriceValue(is_buy ? entry_price + g_state.tp1_points * _Point
+                                      : entry_price - g_state.tp1_points * _Point)
+         : 0.0;
+      g_state.market_tp2_price = (g_state.tp2_points > 0.0)
+         ? NormalizePriceValue(is_buy ? entry_price + g_state.tp2_points * _Point
+                                      : entry_price - g_state.tp2_points * _Point)
+         : 0.0;
+     }
   }
 
 void SyncMarketPointsFromAbsoluteTargets(const double entry_price)
@@ -395,6 +489,15 @@ void SyncMarketPointsFromAbsoluteTargets(const double entry_price)
       g_state.sl_points = MathMax(0.0, MathRound(MathAbs(g_state.market_sl_price - entry_price) / _Point));
    if(g_state.market_tp_price > 0.0)
       g_state.tp_points = MathMax(0.0, MathRound(MathAbs(g_state.market_tp_price - entry_price) / _Point));
+   if(IsDualTPMode())
+     {
+      if(g_state.market_tp1_price > 0.0)
+         g_state.tp1_points = MathMax(0.0, MathRound(MathAbs(g_state.market_tp1_price - entry_price) / _Point));
+      if(g_state.market_tp2_price > 0.0)
+         g_state.tp2_points = MathMax(0.0, MathRound(MathAbs(g_state.market_tp2_price - entry_price) / _Point));
+      // Do NOT call EnforceDualTpInvariant here — it refetches CurrentReferencePrice()
+      // which differs from entry_price and causes market_tp1/tp2_price to drift ±1pt per tick.
+     }
   }
 
 double EffectiveStateEntryPrice(const TradePanelAction action)

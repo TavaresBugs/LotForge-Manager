@@ -68,14 +68,20 @@ void RefreshNativePreviewLineDragState(const bool btn_down)
    double entry_price = EffectiveStateEntryPrice(g_state.action);
    double sl_price    = EffectiveStateSLPrice(g_state.action, entry_price);
    double tp_price    = EffectiveStateTPPrice(g_state.action, entry_price);
+   double tp1_price   = EffectiveStateTp1Price(g_state.action, entry_price);
+   double tp2_price   = EffectiveStateTp2Price(g_state.action, entry_price);
 
    string moved_kind = "";
    if(IsPendingAction(g_state.action) && PreviewLinePriceMoved("entry", entry_price))
       moved_kind = "entry";
    else if(PreviewLinePriceMoved("sl", sl_price))
       moved_kind = "sl";
-   else if(PreviewLinePriceMoved("tp", tp_price))
+   else if(!IsDualTPMode() && PreviewLinePriceMoved("tp", tp_price))
       moved_kind = "tp";
+   else if(IsDualTPMode() && PreviewLinePriceMoved("tp1", tp1_price))
+      moved_kind = "tp1";
+   else if(IsDualTPMode() && PreviewLinePriceMoved("tp2", tp2_price))
+      moved_kind = "tp2";
 
    g_native_preview_line_dragging = (moved_kind != "");
    g_native_preview_line_kind     = moved_kind;
@@ -191,6 +197,7 @@ void UpdatePanelScrollCapture(const int mouse_x, const int mouse_y)
   {
    bool want_capture = (g_panel_dragging ||
                         g_panel_manual_dragging ||
+                        g_tp1_drag_active ||
                         g_state.edit_in_progress ||
                         IsMouseNearPanel(mouse_x, mouse_y));
    if(want_capture)
@@ -673,15 +680,36 @@ void UpdateOverlayPreviewLabelsFromSnapshot(const PreviewSnapshot &snapshot,
    double sl_price    = snapshot.sl_price;
    double tp_price    = snapshot.tp_price;
 
-   if(tp_price > 0.0)
+   if(IsDualTPMode())
      {
-      bool tp_bar_above = snapshot.is_buy;
-      UpdateOverlayPreviewLabel("tp", snapshot.tp_label, tp_price, t1, t2,
-                                tp_bar_above,
-                                CLR_OVL_HANDLE_BG, C'160,160,160', clrBlack);
+      EraseOverlayLabel("tp");
+
+      if(snapshot.tp1_price > 0.0)
+         UpdateOverlayPreviewLabel("tp1", snapshot.tp1_label, snapshot.tp1_price, t1, t2,
+                                   snapshot.is_buy,
+                                   CLR_OVL_HANDLE_BG, C'100,180,100', clrBlack);
+      else
+         EraseOverlayLabel("tp1");
+
+      if(snapshot.tp2_price > 0.0)
+         UpdateOverlayPreviewLabel("tp2", snapshot.tp2_label, snapshot.tp2_price, t1, t2,
+                                   snapshot.is_buy,
+                                   CLR_OVL_HANDLE_BG, C'60,140,60', clrBlack);
+      else
+         EraseOverlayLabel("tp2");
      }
    else
-      EraseOverlayLabel("tp");
+     {
+      EraseOverlayLabel("tp1");
+      EraseOverlayLabel("tp2");
+
+      if(tp_price > 0.0)
+         UpdateOverlayPreviewLabel("tp", snapshot.tp_label, tp_price, t1, t2,
+                                   snapshot.is_buy,
+                                   CLR_OVL_HANDLE_BG, C'160,160,160', clrBlack);
+      else
+         EraseOverlayLabel("tp");
+     }
 
    if(sl_price > 0.0)
      {
@@ -735,7 +763,11 @@ bool PreviewFinancialKeysMatch(const PreviewFinancialKey &lhs,
            lhs.sl_points         == rhs.sl_points &&
            lhs.tp_points         == rhs.tp_points &&
            lhs.account_balance   == rhs.account_balance &&
-           lhs.metadata_revision == rhs.metadata_revision);
+           lhs.metadata_revision == rhs.metadata_revision &&
+           lhs.tp_btn_state      == rhs.tp_btn_state &&
+           lhs.tp1_points        == rhs.tp1_points &&
+           lhs.tp2_points        == rhs.tp2_points &&
+           lhs.tp1_lot_pct       == rhs.tp1_lot_pct);
   }
 
 void BuildPreviewFinancialKey(const PreviewSnapshot &snapshot,
@@ -758,6 +790,10 @@ void BuildPreviewFinancialKey(const PreviewSnapshot &snapshot,
    key.tp_points        = MathMax(0.0, MathRound(g_state.tp_points));
    key.account_balance  = NormalizeDouble(AccountInfoDouble(ACCOUNT_BALANCE), 2);
    key.metadata_revision = CurrentSymbolMetadataRevision();
+   key.tp_btn_state     = g_state.tp_btn_state;
+   key.tp1_points       = MathMax(0.0, MathRound(g_state.tp1_points));
+   key.tp2_points       = MathMax(0.0, MathRound(g_state.tp2_points));
+   key.tp1_lot_pct      = NormalizeDouble(g_state.tp1_lot_pct, 2);
   }
 
 //+------------------------------------------------------------------+
@@ -781,7 +817,19 @@ bool BuildPreviewGeometrySnapshot(PreviewSnapshot &snapshot)
       SyncMarketPointsFromAbsoluteTargets(snapshot.entry_price);
 
    snapshot.sl_price = EffectiveStateSLPrice(g_state.action, snapshot.entry_price);
-   snapshot.tp_price = EffectiveStateTPPrice(g_state.action, snapshot.entry_price);
+
+   if(IsDualTPMode())
+     {
+      snapshot.tp_price  = 0.0;   // hide single TP line in dual mode
+      snapshot.tp1_price = EffectiveStateTp1Price(g_state.action, snapshot.entry_price);
+      snapshot.tp2_price = EffectiveStateTp2Price(g_state.action, snapshot.entry_price);
+     }
+   else
+     {
+      snapshot.tp_price  = EffectiveStateTPPrice(g_state.action, snapshot.entry_price);
+      snapshot.tp1_price = 0.0;
+      snapshot.tp2_price = 0.0;
+     }
 
    // short_label always needed for en_label in ApplyPreviewFinancialStateToSnapshot
    snapshot.short_label = ShortPreviewLabel(g_state.action, snapshot.entry_price);
@@ -797,6 +845,12 @@ bool BuildPreviewGeometrySnapshot(PreviewSnapshot &snapshot)
                                     : "";
       snapshot.tp_line_tooltip    = (snapshot.tp_price > 0.0)
                                     ? "TP @ " + FormatPrice(snapshot.tp_price)
+                                    : "";
+      snapshot.tp1_line_tooltip   = (snapshot.tp1_price > 0.0)
+                                    ? "TP1 @ " + FormatPrice(snapshot.tp1_price)
+                                    : "";
+      snapshot.tp2_line_tooltip   = (snapshot.tp2_price > 0.0)
+                                    ? "TP2 @ " + FormatPrice(snapshot.tp2_price)
                                     : "";
      }
 
@@ -846,35 +900,80 @@ void ApplyPreviewFinancialStateToSnapshot(PreviewSnapshot &snapshot)
    snapshot.risk_pct     = snapshot.plan_valid ? g_preview_financial_state.plan.risk_pct : 0.0;
    snapshot.reward_pct   = snapshot.plan_valid ? g_preview_financial_state.plan.reward_pct : 0.0;
 
-   snapshot.en_label = snapshot.short_label + " " + FormatPrice(snapshot.entry_price) +
-                       " l Lots " + FormatLots(snapshot.plan_lots);
+   snapshot.en_label = snapshot.short_label + " l " + FormatLots(snapshot.plan_lots) + " l";
 
    if(snapshot.sl_price > 0.0)
      {
       if(snapshot.plan_valid && snapshot.risk_money > 0.0)
         {
-         snapshot.sl_label = StringFormat("SL %s l -$%.2f",
-                                          FormatPrice(snapshot.sl_price),
+         snapshot.sl_label = StringFormat("SL l %s l -$%.2f",
+                                          FormatLots(snapshot.plan_lots),
                                           snapshot.risk_money);
-         if(snapshot.risk_pct > 0.0)
-            snapshot.sl_label += StringFormat(" l %.2f%%", snapshot.risk_pct);
         }
       else
-         snapshot.sl_label = "SL " + FormatPrice(snapshot.sl_price);
+         snapshot.sl_label = "SL";
      }
 
    if(snapshot.tp_price > 0.0)
      {
       if(snapshot.plan_valid && snapshot.reward_money > 0.0)
         {
-         snapshot.tp_label = StringFormat("TP %s l +$%.2f",
-                                          FormatPrice(snapshot.tp_price),
-                                          snapshot.reward_money);
-         if(snapshot.reward_pct > 0.0)
-            snapshot.tp_label += StringFormat(" l %.2f%%", snapshot.reward_pct);
+         snapshot.tp_label = StringFormat("TP l %.2f l +$%.2f",
+                                          snapshot.plan_lots, snapshot.reward_money);
         }
       else
-         snapshot.tp_label = "TP " + FormatPrice(snapshot.tp_price);
+         snapshot.tp_label = "TP";
+     }
+
+   // ── Dual TP labels (managed exit system) ────────────────────────
+   // Uses InpTP1ClosePct / InpTP2ClosePct — same as execution logic.
+   if(IsDualTPMode() && g_preview_financial_state.ready && g_preview_financial_state.plan_valid)
+     {
+      TradeParams plan  = g_preview_financial_state.plan;
+      bool        is_buy = IsBuyAction(snapshot.action);
+
+      double close_pct1 = MathMax(1.0, MathMin(100.0, InpTP1ClosePct));
+      double close_pct2 = MathMax(1.0, MathMin(100.0, InpTP2ClosePct));
+      // Use MathFloor/vol_step — matches UpdateManagedTradeMarkers projection logic.
+      // NormalizeVolumeValue clamps to vol_min (e.g. 0.1 for US30) which doubles the result.
+      double vol_step_p  = EffectiveVolumeStep();
+      double tp1_lots    = MathFloor(plan.lots * close_pct1 / 100.0 / vol_step_p) * vol_step_p;
+      if(tp1_lots < vol_step_p) tp1_lots = vol_step_p;
+      double remaining   = MathMax(0.0, plan.lots - tp1_lots);
+      double tp2_lots    = MathFloor(remaining * close_pct2 / 100.0 / vol_step_p) * vol_step_p;
+      if(tp2_lots < vol_step_p && remaining > 0.0) tp2_lots = vol_step_p;
+
+      if(snapshot.tp1_price > 0.0)
+        {
+         double tp1_reward = 0.0; string r1;
+         if(tp1_lots > 0.0 &&
+            CalcNetRewardMoneyForMove(plan.entry_price, snapshot.tp1_price,
+                                      tp1_lots, is_buy, tp1_reward, r1))
+            snapshot.tp1_label = StringFormat("TP1 - %.0f%% l %.2f l +$%.2f",
+                                              close_pct1, tp1_lots, tp1_reward);
+         else
+            snapshot.tp1_label = "TP1";
+        }
+
+      if(snapshot.tp2_price > 0.0)
+        {
+         double tp2_reward = 0.0; string r2;
+         double tp2_pct_of_total = (plan.lots > 0.0) ? tp2_lots / plan.lots * 100.0 : close_pct2;
+         if(tp2_lots > 0.0 &&
+            CalcNetRewardMoneyForMove(plan.entry_price, snapshot.tp2_price,
+                                      tp2_lots, is_buy, tp2_reward, r2))
+            snapshot.tp2_label = StringFormat("TP2 - %.0f%% l %.2f l +$%.2f",
+                                              tp2_pct_of_total, tp2_lots, tp2_reward);
+         else
+            snapshot.tp2_label = "TP2";
+        }
+     }
+   else if(IsDualTPMode())
+     {
+      if(snapshot.tp1_price > 0.0)
+         snapshot.tp1_label = "TP1";
+      if(snapshot.tp2_price > 0.0)
+         snapshot.tp2_label = "TP2";
      }
   }
 
@@ -900,21 +999,71 @@ void UpdatePreviewZonesFromSnapshot(const PreviewSnapshot &snapshot,
    // ── zone_sep: align TP/SL inner edges with the entry band outer edges.
    double zone_sep = band;
 
-   if(tp_price > 0.0)
+   if(IsDualTPMode())
      {
-      double tp_hi, tp_lo;
-      if(tp_price > entry_price)
-        { tp_hi = tp_price; tp_lo = entry_price + zone_sep; }
-      else
-        { tp_hi = entry_price - zone_sep; tp_lo = tp_price; }
+      ErasePreviewZone("tp");   // always hide single TP zone in dual mode
 
-      DrawPreviewZone("tp", t1, t2, tp_hi, tp_lo,
-                      CLR_PREV_TP_FILL, CLR_PREV_TP_BORDER,
-                      CLR_PREV_TP_TEXT, snapshot.tp_label, tp_price);
+      // ── TP1 zone ───────────────────────────────────────────────────
+      double tp1_price = snapshot.tp1_price;
+      if(tp1_price > 0.0)
+        {
+         double tp1_hi, tp1_lo;
+         if(tp1_price > entry_price)
+           { tp1_hi = tp1_price; tp1_lo = entry_price + zone_sep; }
+         else
+           { tp1_hi = entry_price - zone_sep; tp1_lo = tp1_price; }
+         DrawPreviewZone("tp1", t1, t2, tp1_hi, tp1_lo,
+                         CLR_PREV_TP_FILL, CLR_PREV_TP_BORDER,
+                         CLR_PREV_TP_TEXT, snapshot.tp1_label, tp1_price);
+        }
+      else
+         ErasePreviewZone("tp1");
+
+      // ── TP2 zone (starts at TP1 edge, ends at TP2) ─────────────────
+      double tp2_price = snapshot.tp2_price;
+      if(tp2_price > 0.0 && tp1_price > 0.0)
+        {
+         double tp2_hi, tp2_lo;
+         if(tp2_price > entry_price)
+           { tp2_hi = tp2_price; tp2_lo = tp1_price; }
+         else
+           { tp2_hi = tp1_price; tp2_lo = tp2_price; }
+         DrawPreviewZone("tp2", t1, t2, tp2_hi, tp2_lo,
+                         C'180,255,200', CLR_PREV_TP_BORDER,
+                         CLR_PREV_TP_TEXT, snapshot.tp2_label, tp2_price);
+        }
+      else if(tp2_price > 0.0)
+        {
+         double tp2_hi, tp2_lo;
+         if(tp2_price > entry_price)
+           { tp2_hi = tp2_price; tp2_lo = entry_price + zone_sep; }
+         else
+           { tp2_hi = entry_price - zone_sep; tp2_lo = tp2_price; }
+         DrawPreviewZone("tp2", t1, t2, tp2_hi, tp2_lo,
+                         C'180,255,200', CLR_PREV_TP_BORDER,
+                         CLR_PREV_TP_TEXT, snapshot.tp2_label, tp2_price);
+        }
+      else
+         ErasePreviewZone("tp2");
      }
    else
      {
-      ErasePreviewZone("tp");
+      ErasePreviewZone("tp1");
+      ErasePreviewZone("tp2");
+
+      if(tp_price > 0.0)
+        {
+         double tp_hi, tp_lo;
+         if(tp_price > entry_price)
+           { tp_hi = tp_price; tp_lo = entry_price + zone_sep; }
+         else
+           { tp_hi = entry_price - zone_sep; tp_lo = tp_price; }
+         DrawPreviewZone("tp", t1, t2, tp_hi, tp_lo,
+                         CLR_PREV_TP_FILL, CLR_PREV_TP_BORDER,
+                         CLR_PREV_TP_TEXT, snapshot.tp_label, tp_price);
+        }
+      else
+         ErasePreviewZone("tp");
      }
 
    if(sl_price > 0.0)
@@ -967,14 +1116,52 @@ void RenderPreviewFromSnapshot(const PreviewSnapshot &snapshot,
       if(ObjectFind(0, sl_ln) >= 0) ObjectDelete(0, sl_ln);
       EraseOverlayLabel("sl");
      }
-   if(snapshot.tp_price > 0.0)
-      EnsurePreviewLine("tp", snapshot.tp_price, CLR_TP_LINE, STYLE_DOT, 1,
-                        snapshot.tp_line_tooltip);
-   else
+   if(IsDualTPMode())
      {
+      // Clean up single TP line
       string tp_ln = PREV_PFX + "tp_line";
       if(ObjectFind(0, tp_ln) >= 0) ObjectDelete(0, tp_ln);
       EraseOverlayLabel("tp");
+
+      if(snapshot.tp1_price > 0.0)
+         EnsurePreviewLine("tp1", snapshot.tp1_price, CLR_TP_LINE, STYLE_DOT, 1,
+                           snapshot.tp1_line_tooltip);
+      else
+        {
+         string tp1_ln = PREV_PFX + "tp1_line";
+         if(ObjectFind(0, tp1_ln) >= 0) ObjectDelete(0, tp1_ln);
+         EraseOverlayLabel("tp1");
+        }
+
+      if(snapshot.tp2_price > 0.0)
+         EnsurePreviewLine("tp2", snapshot.tp2_price, C'0,160,80', STYLE_DOT, 1,
+                           snapshot.tp2_line_tooltip);
+      else
+        {
+         string tp2_ln = PREV_PFX + "tp2_line";
+         if(ObjectFind(0, tp2_ln) >= 0) ObjectDelete(0, tp2_ln);
+         EraseOverlayLabel("tp2");
+        }
+     }
+   else
+     {
+      // Clean up dual TP lines
+      string tp1_ln = PREV_PFX + "tp1_line";
+      string tp2_ln = PREV_PFX + "tp2_line";
+      if(ObjectFind(0, tp1_ln) >= 0) ObjectDelete(0, tp1_ln);
+      if(ObjectFind(0, tp2_ln) >= 0) ObjectDelete(0, tp2_ln);
+      EraseOverlayLabel("tp1");
+      EraseOverlayLabel("tp2");
+
+      if(snapshot.tp_price > 0.0)
+         EnsurePreviewLine("tp", snapshot.tp_price, CLR_TP_LINE, STYLE_DOT, 1,
+                           snapshot.tp_line_tooltip);
+      else
+        {
+         string tp_ln = PREV_PFX + "tp_line";
+         if(ObjectFind(0, tp_ln) >= 0) ObjectDelete(0, tp_ln);
+         EraseOverlayLabel("tp");
+        }
      }
 
    UpdatePreviewZonesFromSnapshot(snapshot, t1, t2);
@@ -987,7 +1174,7 @@ void ForcePreviewLinesFlat()
   {
    // Lines are now SELECTABLE — deselect them after updates to
    // avoid leftover anchor dots from previous drag operations.
-   string kinds[] = {"entry_line", "sl_line", "tp_line"};
+   string kinds[] = {"entry_line", "sl_line", "tp_line", "tp1_line", "tp2_line"};
    for(int i = 0; i < ArraySize(kinds); i++)
      {
       string n = PREV_PFX + kinds[i];
@@ -1122,8 +1309,39 @@ string DetectOverlayBarHit(const int mx, const int my)
              my>=_by-OVL_HIT_PAD_PX && my<=_by+_bh+OVL_HIT_PAD_PX) return "sl";
          }
       }
-    // tp bar
-    if(tp_p > 0.0)
+    // tp bar (single mode) or tp1/tp2 bars (dual mode)
+    if(IsDualTPMode())
+      {
+       double tp1_p = EffectiveStateTp1Price(g_state.action, entry_p);
+       double tp2_p = EffectiveStateTp2Price(g_state.action, entry_p);
+       if(tp1_p > 0.0)
+         {
+          _n = PREV_PFX + "tp1_ovbg";
+          if(ObjectFind(0,_n) >= 0)
+            {
+             _bx=(int)ObjectGetInteger(0,_n,OBJPROP_XDISTANCE);
+             _by=(int)ObjectGetInteger(0,_n,OBJPROP_YDISTANCE);
+             _bw=(int)ObjectGetInteger(0,_n,OBJPROP_XSIZE);
+             _bh=(int)ObjectGetInteger(0,_n,OBJPROP_YSIZE);
+             if(mx>=_bx-OVL_HIT_PAD_PX && mx<=_bx+_bw+OVL_HIT_PAD_PX &&
+                my>=_by-OVL_HIT_PAD_PX && my<=_by+_bh+OVL_HIT_PAD_PX) return "tp1";
+            }
+         }
+       if(tp2_p > 0.0)
+         {
+          _n = PREV_PFX + "tp2_ovbg";
+          if(ObjectFind(0,_n) >= 0)
+            {
+             _bx=(int)ObjectGetInteger(0,_n,OBJPROP_XDISTANCE);
+             _by=(int)ObjectGetInteger(0,_n,OBJPROP_YDISTANCE);
+             _bw=(int)ObjectGetInteger(0,_n,OBJPROP_XSIZE);
+             _bh=(int)ObjectGetInteger(0,_n,OBJPROP_YSIZE);
+             if(mx>=_bx-OVL_HIT_PAD_PX && mx<=_bx+_bw+OVL_HIT_PAD_PX &&
+                my>=_by-OVL_HIT_PAD_PX && my<=_by+_bh+OVL_HIT_PAD_PX) return "tp2";
+            }
+         }
+      }
+    else if(tp_p > 0.0)
       {
        _n = PREV_PFX + "tp_ovbg";
        if(ObjectFind(0,_n) >= 0)
@@ -1189,6 +1407,10 @@ bool ApplyLineDrag(const int mx, const int my)
    double old_tp_points       = g_state.tp_points;
    double old_market_sl_price = g_state.market_sl_price;
    double old_market_tp_price = g_state.market_tp_price;
+   double old_tp1_points      = g_state.tp1_points;
+   double old_tp2_points      = g_state.tp2_points;
+   double old_market_tp1_price = g_state.market_tp1_price;
+   double old_market_tp2_price = g_state.market_tp2_price;
    double   new_price;
    if(!ResolveDragPriceFromMouse(mx, my, new_price)) return false;
    if(new_price <= 0.0) return false;
@@ -1203,13 +1425,21 @@ bool ApplyLineDrag(const int mx, const int my)
       // ── Keep SL/TP at their absolute prices when entry moves ────────
       double old_entry = g_state.entry_price;
       double pt = _Point;
-      double old_sl_price = 0.0, old_tp_price = 0.0;
+      bool   dual = IsDualTPMode();
+      double old_sl_price  = 0.0, old_tp_price  = 0.0;
+      double old_tp1_price = 0.0, old_tp2_price = 0.0;
       if(old_entry > 0.0 && g_state.sl_points > 0.0)
          old_sl_price = is_buy ? old_entry - g_state.sl_points * pt
                                : old_entry + g_state.sl_points * pt;
-      if(old_entry > 0.0 && g_state.tp_points > 0.0)
+      if(!dual && old_entry > 0.0 && g_state.tp_points > 0.0)
          old_tp_price = is_buy ? old_entry + g_state.tp_points * pt
                                : old_entry - g_state.tp_points * pt;
+      if(dual && old_entry > 0.0 && g_state.tp1_points > 0.0)
+         old_tp1_price = is_buy ? old_entry + g_state.tp1_points * pt
+                                : old_entry - g_state.tp1_points * pt;
+      if(dual && old_entry > 0.0 && g_state.tp2_points > 0.0)
+         old_tp2_price = is_buy ? old_entry + g_state.tp2_points * pt
+                                : old_entry - g_state.tp2_points * pt;
 
       g_state.entry_price = new_price;
 
@@ -1224,6 +1454,18 @@ bool ApplyLineDrag(const int mx, const int my)
          double new_tp_pts = MathRound(MathAbs(old_tp_price - new_price) / _Point);
          if(new_tp_pts >= 1.0)
             g_state.tp_points = new_tp_pts;
+        }
+      if(old_tp1_price > 0.0 && new_price > 0.0)
+        {
+         double new_tp1_pts = MathRound(MathAbs(old_tp1_price - new_price) / pt);
+         if(new_tp1_pts >= 1.0)
+            g_state.tp1_points = new_tp1_pts;
+        }
+      if(old_tp2_price > 0.0 && new_price > 0.0)
+        {
+         double new_tp2_pts = MathRound(MathAbs(old_tp2_price - new_price) / pt);
+         if(new_tp2_pts >= 1.0)
+            g_state.tp2_points = new_tp2_pts;
         }
      }
    else if(g_drag_line_kind == "sl")
@@ -1252,11 +1494,42 @@ bool ApplyLineDrag(const int mx, const int my)
             g_state.market_tp_price = new_price;
         }
      }
+   else if(g_drag_line_kind == "tp1" && IsDualTPMode())
+     {
+      double ref_e = is_market ? CurrentReferencePrice(is_buy) : g_state.entry_price;
+      if(ref_e > 0.0)
+        {
+         double min_tick = (tick_sz > 0.0) ? tick_sz : _Point;
+         bool ok = is_buy ? (new_price > ref_e) : (new_price < ref_e);
+         if(!ok) new_price = NormalizePriceValue(is_buy ? ref_e + min_tick : ref_e - min_tick);
+         g_state.tp1_points = MathMax(1.0, MathRound(MathAbs(new_price - ref_e) / _Point));
+         if(is_market) g_state.market_tp1_price = new_price;
+         EnforceDualTpInvariant(true, false);
+        }
+     }
+   else if(g_drag_line_kind == "tp2" && IsDualTPMode())
+     {
+      double ref_e = is_market ? CurrentReferencePrice(is_buy) : g_state.entry_price;
+      if(ref_e > 0.0)
+        {
+         double min_tick = (tick_sz > 0.0) ? tick_sz : _Point;
+         bool ok = is_buy ? (new_price > ref_e) : (new_price < ref_e);
+         if(!ok) new_price = NormalizePriceValue(is_buy ? ref_e + min_tick : ref_e - min_tick);
+         g_state.tp2_points = MathMax(1.0, MathRound(MathAbs(new_price - ref_e) / _Point));
+         if(is_market) g_state.market_tp2_price = new_price;
+         g_state.tp2_linked = false;
+         EnforceDualTpInvariant(false, true);
+        }
+     }
    return (g_state.entry_price      != old_entry_price     ||
            g_state.sl_points        != old_sl_points       ||
            g_state.tp_points        != old_tp_points       ||
+           g_state.tp1_points       != old_tp1_points      ||
+           g_state.tp2_points       != old_tp2_points      ||
            g_state.market_sl_price  != old_market_sl_price ||
-           g_state.market_tp_price  != old_market_tp_price);
+           g_state.market_tp_price  != old_market_tp_price ||
+           g_state.market_tp1_price != old_market_tp1_price ||
+           g_state.market_tp2_price != old_market_tp2_price);
   }
 
 //+------------------------------------------------------------------+
@@ -1270,11 +1543,6 @@ bool ApplyLineDrag(const int mx, const int my)
 
 void HandleNativeLineDrag(const string obj_name)
   {
-   if(g_state.action == ACTION_NONE) return;
-
-   bool is_buy    = IsBuyAction(g_state.action);
-   bool is_market = IsMarketAction(g_state.action);
-
    double new_price = ObjectGetDouble(0, obj_name, OBJPROP_PRICE);
    if(new_price <= 0.0) return;
 
@@ -1284,10 +1552,157 @@ void HandleNativeLineDrag(const string obj_name)
    else
       new_price = NormalizePriceValue(new_price);
 
+   // ── Managed SL drag — works regardless of panel action ───────────────
+   {
+    bool is_sldr    = (StringFind(obj_name, SLDR_PFX) == 0);
+    bool is_adopted = (!is_sldr && StringFind(obj_name, PANEL_PREFIX) != 0 &&
+                       StringFind(ObjectGetString(0, obj_name, OBJPROP_TOOLTIP, 0), " SL — ") >= 0);
+    if(is_sldr || is_adopted)
+      {
+       string ticket_str;
+       if(is_sldr)
+          ticket_str = StringSubstr(obj_name, StringLen(SLDR_PFX));
+       else
+         {
+          string tip = ObjectGetString(0, obj_name, OBJPROP_TOOLTIP, 0);
+          int    sl_pos = StringFind(tip, " SL");
+          ticket_str = (sl_pos > 1) ? StringSubstr(tip, 1, sl_pos - 1) : "";
+         }
+       if(ticket_str != "")
+         {
+          ulong mg_ticket = (ulong)StringToInteger(ticket_str);
+          if(PositionSelectByTicket(mg_ticket))
+            {
+             double curr_sl = PositionGetDouble(POSITION_SL);
+             double curr_tp = PositionGetDouble(POSITION_TP);
+             bool   p_buy   = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+
+             if(InpSlSnapPoints > 0)
+               {
+                double snap_dist  = InpSlSnapPoints * _Point;
+                double best_price = 0.0, best_dist = snap_dist + 1.0;
+                int    mgd_n = ArraySize(g_managed_trades);
+                for(int si = 0; si < mgd_n; si++)
+                  {
+                   ulong other_t = g_managed_trades[si].ticket;
+                   if(other_t == mg_ticket) continue;
+                   if(!PositionSelectByTicket(other_t)) continue;
+                   if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+                   double other_sl = PositionGetDouble(POSITION_SL);
+                   if(other_sl > 0.0)
+                     {
+                      double d = MathAbs(other_sl - new_price);
+                      if(d <= snap_dist && d < best_dist)
+                        { best_dist = d; best_price = other_sl; }
+                     }
+                  }
+                PositionSelectByTicket(mg_ticket);
+                int total_objs = ObjectsTotal(0, 0, OBJ_HLINE);
+                for(int oi = 0; oi < total_objs; oi++)
+                  {
+                   string ln = ObjectName(0, oi, 0, OBJ_HLINE);
+                   if(StringFind(ln, PANEL_PREFIX) == 0) continue;
+                   double lp = ObjectGetDouble(0, ln, OBJPROP_PRICE);
+                   if(lp > 0.0)
+                     {
+                      double d = MathAbs(lp - new_price);
+                      if(d <= snap_dist && d < best_dist)
+                        { best_dist = d; best_price = lp; }
+                     }
+                  }
+                if(best_price > 0.0) new_price = best_price;
+               }
+
+             MqlTick t_info;
+             if(SymbolInfoTick(_Symbol, t_info))
+               {
+                double ref_mkt = p_buy ? t_info.bid : t_info.ask;
+                bool   ok_side = p_buy ? (new_price < ref_mkt) : (new_price > ref_mkt);
+                if(!ok_side)
+                  {
+                   ObjectSetDouble(0, obj_name, OBJPROP_PRICE, curr_sl);
+                   ObjectSetInteger(0, obj_name, OBJPROP_SELECTED, false);
+                   SetStatus("SL inválido: deve ficar do lado oposto ao preço atual.");
+                   return;
+                  }
+               }
+
+             if(g_trade.PositionModify(mg_ticket, new_price, curr_tp))
+               {
+                ObjectSetDouble(0, obj_name, OBJPROP_PRICE, new_price);
+                SetStatus(StringFormat("#%s SL → %s", ticket_str, FormatPrice(new_price)));
+               }
+             else
+               {
+                ObjectSetDouble(0, obj_name, OBJPROP_PRICE, curr_sl);
+                SetStatus(StringFormat("✗ SL modify [%d] %s",
+                                       g_trade.ResultRetcode(),
+                                       g_trade.ResultRetcodeDescription()), true);
+               }
+            }
+          ObjectSetInteger(0, obj_name, OBJPROP_SELECTED, false);
+          return;
+         }
+      }
+   }
+
+   // ── TP1 exit drag line ────────────────────────────────────────────────
+   if(StringFind(obj_name, TP1DR_PFX) == 0)
+     {
+      string ticket_str = StringSubstr(obj_name, StringLen(TP1DR_PFX));
+      ulong  mg_ticket  = (ulong)StringToInteger(ticket_str);
+      int    idx        = -1;
+      int    mgd_n_tp1  = ArraySize(g_managed_trades);
+      for(int mi = 0; mi < mgd_n_tp1; mi++)
+         if(g_managed_trades[mi].ticket == mg_ticket) { idx = mi; break; }
+      if(idx >= 0 && g_managed_trades[idx].tp_exits_enabled && !g_managed_trades[idx].tp1_done)
+        {
+         if(!PositionSelectByTicket(mg_ticket))
+           { ObjectSetInteger(0, obj_name, OBJPROP_SELECTED, false); return; }
+         bool   p_buy      = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+         double curr_tp1   = g_managed_trades[idx].managed_tp1_price;
+         double curr_tp2   = g_managed_trades[idx].managed_tp2_price;
+         double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
+
+         // Validate: TP1 must be on profit side of open
+         bool ok_side = p_buy ? (new_price > open_price) : (new_price < open_price);
+         // Validate: TP1 must not cross TP2 (leave at least 1 point gap)
+         if(curr_tp2 > 0.0)
+            ok_side = ok_side && (p_buy ? (new_price < curr_tp2 - _Point)
+                                        : (new_price > curr_tp2 + _Point));
+         if(!ok_side)
+           {
+            ObjectSetDouble(0, obj_name, OBJPROP_PRICE, curr_tp1);
+            ObjectSetInteger(0, obj_name, OBJPROP_SELECTED, false);
+            SetStatus("TP1 inválido: deve ficar entre entrada e TP2.");
+            return;
+           }
+
+         g_managed_trades[idx].managed_tp1_price = new_price;
+         ObjectSetDouble(0, obj_name, OBJPROP_PRICE, new_price);
+         ObjectSetInteger(0, obj_name, OBJPROP_SELECTED, false);
+         SetStatus(StringFormat("#%s TP1 Exit → %s", ticket_str, FormatPrice(new_price)));
+         // Refresh markers immediately so label text reflects new TP1 price
+         UpdateManagedTradeMarkers(mg_ticket);
+         RequestChartRedraw();
+         return;
+        }
+      ObjectSetInteger(0, obj_name, OBJPROP_SELECTED, false);
+      return;
+     }
+
+   // ── Preview lines — require active panel action ───────────────────────
+   if(g_state.action == ACTION_NONE) return;
+
+   bool is_buy    = IsBuyAction(g_state.action);
+   bool is_market = IsMarketAction(g_state.action);
+
    // ── Identify which line was dragged ──────────────────────────────
    string entry_ln = PREV_PFX + "entry_line";
    string sl_ln    = PREV_PFX + "sl_line";
    string tp_ln    = PREV_PFX + "tp_line";
+   string tp1_ln   = PREV_PFX + "tp1_line";
+   string tp2_ln   = PREV_PFX + "tp2_line";
 
    if(obj_name == entry_ln && IsPendingAction(g_state.action))
      {
@@ -1295,13 +1710,21 @@ void HandleNativeLineDrag(const string obj_name)
       //  Compute old absolute SL/TP, set new entry, then recalc points.
       double old_entry = g_state.entry_price;
       double pt = _Point;
-      double old_sl_price = 0.0, old_tp_price = 0.0;
+      bool   dual = IsDualTPMode();
+      double old_sl_price  = 0.0, old_tp_price  = 0.0;
+      double old_tp1_price = 0.0, old_tp2_price = 0.0;
       if(old_entry > 0.0 && g_state.sl_points > 0.0)
          old_sl_price = is_buy ? old_entry - g_state.sl_points * pt
                                : old_entry + g_state.sl_points * pt;
-      if(old_entry > 0.0 && g_state.tp_points > 0.0)
+      if(!dual && old_entry > 0.0 && g_state.tp_points > 0.0)
          old_tp_price = is_buy ? old_entry + g_state.tp_points * pt
                                : old_entry - g_state.tp_points * pt;
+      if(dual && old_entry > 0.0 && g_state.tp1_points > 0.0)
+         old_tp1_price = is_buy ? old_entry + g_state.tp1_points * pt
+                                : old_entry - g_state.tp1_points * pt;
+      if(dual && old_entry > 0.0 && g_state.tp2_points > 0.0)
+         old_tp2_price = is_buy ? old_entry + g_state.tp2_points * pt
+                                : old_entry - g_state.tp2_points * pt;
 
       g_state.entry_price = new_price;
 
@@ -1317,6 +1740,18 @@ void HandleNativeLineDrag(const string obj_name)
          double new_tp_pts = MathRound(MathAbs(old_tp_price - new_price) / pt);
          if(new_tp_pts >= 1.0)
             g_state.tp_points = new_tp_pts;
+        }
+      if(old_tp1_price > 0.0 && new_price > 0.0)
+        {
+         double new_tp1_pts = MathRound(MathAbs(old_tp1_price - new_price) / pt);
+         if(new_tp1_pts >= 1.0)
+            g_state.tp1_points = new_tp1_pts;
+        }
+      if(old_tp2_price > 0.0 && new_price > 0.0)
+        {
+         double new_tp2_pts = MathRound(MathAbs(old_tp2_price - new_price) / pt);
+         if(new_tp2_pts >= 1.0)
+            g_state.tp2_points = new_tp2_pts;
         }
      }
    else if(obj_name == sl_ln)
@@ -1345,6 +1780,33 @@ void HandleNativeLineDrag(const string obj_name)
             g_state.market_tp_price = new_price;
         }
      }
+   else if(obj_name == tp1_ln && IsDualTPMode())
+     {
+      double ref_e = is_market ? CurrentReferencePrice(is_buy) : g_state.entry_price;
+      if(ref_e > 0.0)
+        {
+         double min_tick = (tick_sz > 0.0) ? tick_sz : _Point;
+         bool ok = is_buy ? (new_price > ref_e) : (new_price < ref_e);
+         if(!ok) new_price = NormalizePriceValue(is_buy ? ref_e + min_tick : ref_e - min_tick);
+         g_state.tp1_points = MathMax(1.0, MathRound(MathAbs(new_price - ref_e) / _Point));
+         if(is_market) g_state.market_tp1_price = new_price;
+         EnforceDualTpInvariant(true, false);
+        }
+     }
+   else if(obj_name == tp2_ln && IsDualTPMode())
+     {
+      double ref_e = is_market ? CurrentReferencePrice(is_buy) : g_state.entry_price;
+      if(ref_e > 0.0)
+        {
+         double min_tick = (tick_sz > 0.0) ? tick_sz : _Point;
+         bool ok = is_buy ? (new_price > ref_e) : (new_price < ref_e);
+         if(!ok) new_price = NormalizePriceValue(is_buy ? ref_e + min_tick : ref_e - min_tick);
+         g_state.tp2_points = MathMax(1.0, MathRound(MathAbs(new_price - ref_e) / _Point));
+         if(is_market) g_state.market_tp2_price = new_price;
+         g_state.tp2_linked = false;   // manual drag de-links TP2
+         EnforceDualTpInvariant(false, true);
+        }
+     }
    else
      {
       return;   // not one of our lines
@@ -1357,6 +1819,114 @@ void HandleNativeLineDrag(const string obj_name)
 
    g_panel.RefreshValues();
    UpdatePreview();
+  }
+
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//|  ██  HandleTP1PriceDrag — custom MOUSE_MOVE drag for TP1 line   |
+//|                                                                   |
+//|  Native OBJECT_DRAG is unreliable when the TP1 line maps to a    |
+//|  Y position covered by the panel (panel intercepts mousedown).   |
+//|  This custom handler detects proximity via ChartTimePriceToXY    |
+//|  and updates the OBJ_HLINE price in real time.                   |
+//+------------------------------------------------------------------+
+
+bool HandleTP1PriceDrag(const int mx, const int my, const bool btn_down)
+  {
+   // ── Release: validate and commit ────────────────────────────────
+   if(!btn_down && g_tp1_drag_active)
+     {
+      ulong  ticket   = g_tp1_drag_ticket;
+      string tp1dr_nm = TP1DR_PFX + IntegerToString(ticket);
+      double new_price = ObjectGetDouble(0, tp1dr_nm, OBJPROP_PRICE);
+
+      int idx  = -1, mgd_n = ArraySize(g_managed_trades);
+      for(int mi = 0; mi < mgd_n; mi++)
+         if(g_managed_trades[mi].ticket == ticket) { idx = mi; break; }
+
+      if(idx >= 0 && g_managed_trades[idx].tp_exits_enabled && !g_managed_trades[idx].tp1_done &&
+         PositionSelectByTicket(ticket))
+        {
+         double tick_sz = SymbolTickSizeCached();
+         if(tick_sz > 0.0)
+            new_price = NormalizePriceValue(MathRound(new_price / tick_sz) * tick_sz);
+         else
+            new_price = NormalizePriceValue(new_price);
+
+         bool   p_buy      = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+         double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
+         double curr_tp1   = g_managed_trades[idx].managed_tp1_price;
+         double curr_tp2   = g_managed_trades[idx].managed_tp2_price;
+
+         bool ok_side = p_buy ? (new_price > open_price) : (new_price < open_price);
+         if(curr_tp2 > 0.0)
+            ok_side = ok_side && (p_buy ? (new_price < curr_tp2 - _Point)
+                                        : (new_price > curr_tp2 + _Point));
+         if(ok_side)
+           {
+            g_managed_trades[idx].managed_tp1_price = new_price;
+            ObjectSetDouble(0, tp1dr_nm, OBJPROP_PRICE, new_price);
+            SetStatus(StringFormat("#%s TP1 Exit → %s",
+                                   IntegerToString(ticket), FormatPrice(new_price)));
+            UpdateManagedTradeMarkers(ticket);
+           }
+         else
+           {
+            ObjectSetDouble(0, tp1dr_nm, OBJPROP_PRICE, curr_tp1);
+            SetStatus("TP1 inválido: deve ficar entre entrada e TP2.");
+           }
+         RequestChartRedraw();
+        }
+
+      g_tp1_drag_active = false;
+      g_tp1_drag_ticket = 0;
+      RestoreChartScroll();
+      return true;
+     }
+
+   // ── During drag: update line price in real time ──────────────────
+   if(btn_down && g_tp1_drag_active)
+     {
+      string   tp1dr_nm = TP1DR_PFX + IntegerToString(g_tp1_drag_ticket);
+      int      subwin   = 0;
+      datetime t_dummy;
+      double   price    = 0.0;
+      if(ChartXYToTimePrice(0, mx, my, subwin, t_dummy, price) && price > 0.0)
+        {
+         ObjectSetDouble(0, tp1dr_nm, OBJPROP_PRICE, price);
+         RequestChartRedraw();
+        }
+      return true;
+     }
+
+   // ── Start: detect mousedown within 6px Y of a TP1 line ──────────
+   if(btn_down && !g_tp1_drag_active &&
+      g_drag_phase == DRAG_IDLE && !g_panel_dragging && !g_panel_manual_dragging)
+     {
+      int mgd_n = ArraySize(g_managed_trades);
+      for(int mi = 0; mi < mgd_n; mi++)
+        {
+         if(!g_managed_trades[mi].tp_exits_enabled || g_managed_trades[mi].tp1_done ||
+            g_managed_trades[mi].managed_tp1_price <= 0.0) continue;
+         string tp1dr_nm = TP1DR_PFX + IntegerToString(g_managed_trades[mi].ticket);
+         if(ObjectFind(0, tp1dr_nm) < 0) continue;
+
+         int tp1_px = 0, tp1_py = 0;
+         if(!ChartTimePriceToXY(0, 0, TimeCurrent(), g_managed_trades[mi].managed_tp1_price,
+                                 tp1_px, tp1_py))
+            continue;
+
+         if(MathAbs(my - tp1_py) <= 12)
+           {
+            g_tp1_drag_active = true;
+            g_tp1_drag_ticket = g_managed_trades[mi].ticket;
+            SuppressChartScroll();
+            return true;
+           }
+        }
+     }
+
+   return false;
   }
 
 //+------------------------------------------------------------------+
@@ -1379,6 +1949,13 @@ void HandleMouseMoveDrag(const long   mouse_x_l,
    int my = (int)mouse_y_d;
 
    RefreshNativePreviewLineDragState(btn_down);
+
+   if(HandleTP1PriceDrag(mx, my, btn_down))
+     {
+      UpdatePanelScrollCapture(mx, my);
+      return;
+     }
+
    UpdatePanelScrollCapture(mx, my);
 
    if(HandlePanelEdgeGrabDrag(mx, my, btn_down))

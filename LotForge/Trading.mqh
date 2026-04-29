@@ -629,6 +629,46 @@ bool BuildTradePlan(TradeParams &params, string &out_reason)
         }
      }
 
+  return true;
+ }
+
+bool ValidateTpTarget(const double entry_price,
+                      const double tp_price,
+                      const double tp_points,
+                      const bool   is_buy,
+                      const int    stops_level_pts,
+                      const string label,
+                      string       &message)
+  {
+   if(tp_points <= 0.0 || tp_price <= 0.0)
+     {
+      message = "Erro: " + label + " nao definido.";
+      return false;
+     }
+
+   if(is_buy && tp_price <= entry_price)
+     {
+      message = "Erro: " + label + " de compra deve estar acima da entrada.";
+      return false;
+     }
+   if(!is_buy && tp_price >= entry_price)
+     {
+      message = "Erro: " + label + " de venda deve estar abaixo da entrada.";
+      return false;
+     }
+
+   if(stops_level_pts > 0)
+     {
+      double tp_dist  = MathAbs(entry_price - tp_price);
+      double min_dist = stops_level_pts * _Point;
+      if(tp_dist < min_dist)
+        {
+         message = StringFormat("Erro: %s muito proximo (minimo %d pontos, atual %.0f).",
+                                label, stops_level_pts, MathRound(tp_dist / _Point));
+         return false;
+        }
+     }
+
    return true;
   }
 
@@ -649,6 +689,7 @@ bool ValidateTradeRequest(const TradeParams &params, string &message)
 
    bool is_buy    = IsBuyAction(g_state.action);
    bool is_market = IsMarketAction(g_state.action);
+   bool dual_tp   = IsDualTPMode();
 
    // ── 2. Entry price ────────────────────────────────────────────────
    if(params.entry_price <= 0.0)
@@ -670,15 +711,6 @@ bool ValidateTradeRequest(const TradeParams &params, string &message)
    if(!is_buy && params.sl_price <= params.entry_price)
      { message = "Erro: SL de venda deve estar acima da entrada."; return false; }
 
-   // ── 5. TP semantic (only if TP is set) ───────────────────────────
-   if(params.tp_points > 0.0 && params.tp_price > 0.0)
-     {
-      if(is_buy && params.tp_price <= params.entry_price)
-        { message = "Erro: TP de compra deve estar acima da entrada."; return false; }
-      if(!is_buy && params.tp_price >= params.entry_price)
-        { message = "Erro: TP de venda deve estar abaixo da entrada."; return false; }
-     }
-
    // ── 6. Lots ───────────────────────────────────────────────────────
    if(params.lots <= 0.0)
      { message = "Erro: lotes devem ser > 0."; return false; }
@@ -689,6 +721,22 @@ bool ValidateTradeRequest(const TradeParams &params, string &message)
      { message = StringFormat("Erro: lotes %.5f abaixo do mínimo %.5f.", params.lots, vol_min); return false; }
    if(vol_max > 0.0 && params.lots > vol_max)
      { message = StringFormat("Erro: lotes %.5f acima do máximo %.5f.", params.lots, vol_max); return false; }
+
+   double tp1_price = 0.0;
+   double tp2_price = 0.0;
+   double tp1_points = 0.0;
+   double tp2_points = 0.0;
+   if(dual_tp)
+     {
+      tp1_price = EffectiveStateTp1Price(g_state.action, params.entry_price);
+      tp2_price = EffectiveStateTp2Price(g_state.action, params.entry_price);
+      tp1_points = (tp1_price > 0.0)
+                   ? MathMax(0.0, MathRound(MathAbs(tp1_price - params.entry_price) / _Point))
+                   : 0.0;
+      tp2_points = (tp2_price > 0.0)
+                   ? MathMax(0.0, MathRound(MathAbs(tp2_price - params.entry_price) / _Point))
+                   : 0.0;
+     }
 
    // ── 7. Stops-level distance ───────────────────────────────────────
    // SYMBOL_TRADE_STOPS_LEVEL is in points (integer).
@@ -725,19 +773,6 @@ bool ValidateTradeRequest(const TradeParams &params, string &message)
               }
            }
         }
-
-      // TP distance check (if TP set):
-      if(params.tp_points > 0.0 && params.tp_price > 0.0)
-        {
-         double tp_dist = MathAbs(params.entry_price - params.tp_price);
-         if(tp_dist < min_dist)
-           {
-            message = StringFormat("Erro: TP muito próximo (mínimo %d pontos, atual %.0f).",
-                                   stops_level_pts,
-                                   MathRound(tp_dist / _Point));
-            return false;
-           }
-        }
      }
 
    // ── 8. Freeze level (additional broker constraint) ────────────────
@@ -760,6 +795,42 @@ bool ValidateTradeRequest(const TradeParams &params, string &message)
         }
      }
 
+   // ── 9. TP validation ──────────────────────────────────────────────
+   if(dual_tp)
+     {
+      if(!ValidateTpTarget(params.entry_price, tp1_price, tp1_points,
+                           is_buy, stops_level_pts, "TP1", message))
+         return false;
+      if(!ValidateTpTarget(params.entry_price, tp2_price, tp2_points,
+                           is_buy, stops_level_pts, "TP2", message))
+         return false;
+
+      if(is_buy && tp2_price <= tp1_price)
+        {
+         message = "Erro: TP2 deve ficar acima de TP1.";
+         return false;
+        }
+      if(!is_buy && tp2_price >= tp1_price)
+        {
+         message = "Erro: TP2 deve ficar abaixo de TP1.";
+         return false;
+        }
+
+      double min_gap_points = DualTpGuardrailPoints();
+      if(tp2_points < tp1_points + min_gap_points)
+        {
+         message = StringFormat("Erro: TP2 deve respeitar gap minimo de %.0f pontos em relacao ao TP1.",
+                                min_gap_points);
+         return false;
+        }
+     }
+   else if(params.tp_points > 0.0 && params.tp_price > 0.0)
+     {
+      if(!ValidateTpTarget(params.entry_price, params.tp_price, params.tp_points,
+                           is_buy, stops_level_pts, "TP", message))
+         return false;
+     }
+
    // ── All checks passed ─────────────────────────────────────────────
    string action_lbl = EffectiveActionLabel(g_state.action, params.entry_price);
 
@@ -770,10 +841,15 @@ bool ValidateTradeRequest(const TradeParams &params, string &message)
    else if(g_state.risk_mode == RISK_MODE_MONEY && params.risk_money > 0.0)
       lots_origin = StringFormat(" [$%.2f alvo, real $%.2f]", g_state.risk_money, params.risk_money);
 
-   // TP field: price + points, or "sem TP"
-   string tp_str = (params.tp_price > 0.0)
-                   ? StringFormat(", TP %s (%.0f pt)", FormatPrice(params.tp_price), params.tp_points)
-                   : ", sem TP";
+   string tp_str;
+   if(dual_tp)
+      tp_str = StringFormat(", TP1 %s (%.0f pt) + TP2 %s (%.0f pt)",
+                            FormatPrice(tp1_price), tp1_points,
+                            FormatPrice(tp2_price), tp2_points);
+   else
+      tp_str = (params.tp_price > 0.0)
+               ? StringFormat(", TP %s (%.0f pt)", FormatPrice(params.tp_price), params.tp_points)
+               : ", sem TP";
 
    message = StringFormat("Pronto: %s, %s lots%s, entrada %s, SL %s (%.0f pt)%s",
                           action_lbl,
@@ -1039,3 +1115,4 @@ bool SendSelectedOrder(const TradeParams &plan)
       return false;
      }
   }
+

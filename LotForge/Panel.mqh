@@ -13,6 +13,7 @@ ON_EVENT(ON_CLICK, m_BtnPrimaryUp,    OnClickPrimaryUp)
 ON_EVENT(ON_CLICK, m_BtnPrimaryDn,    OnClickPrimaryDn)
 ON_EVENT(ON_CLICK, m_BtnEntryUp,      OnClickEntryUp)
 ON_EVENT(ON_CLICK, m_BtnEntryDn,      OnClickEntryDn)
+ON_EVENT(ON_CLICK, m_LblTP,            OnClickTPLabel)
 ON_EVENT(ON_CLICK, m_BtnTPUp,         OnClickTPUp)
 ON_EVENT(ON_CLICK, m_BtnTPDn,         OnClickTPDn)
 ON_EVENT(ON_CLICK, m_BtnSLUp,         OnClickSLUp)
@@ -30,6 +31,7 @@ ON_EVENT(ON_CLICK, m_BtnSend,         OnClickSend)
 ON_EVENT(ON_END_EDIT, m_EdtPrimary,   OnEndEditPrimary)
 ON_EVENT(ON_END_EDIT, m_EdtEntry,     OnEndEditEntry)
 ON_EVENT(ON_END_EDIT, m_EdtTP,        OnEndEditTP)
+ON_EVENT(ON_END_EDIT, m_EdtTP2,       OnEndEditTP2)
 ON_EVENT(ON_END_EDIT, m_EdtSL,        OnEndEditSL)
 EVENT_MAP_END(CAppDialog)
 
@@ -119,6 +121,47 @@ bool CLotForgePanel::CreateRiskModeGroup(const int x, const int y,
    return true;
   }
 
+bool CLotForgePanel::CreateTPGroup(const int x, const int y,
+                                    const int lbl_w, const int edt_w)
+  {
+   // ── TP main label (full height) — clickable to cycle mode ──────
+   if(!m_LblTP.Create(m_chart_id, m_name + "_lbl_TP", m_subwin,
+      x, y, x + lbl_w, y + ROW_H)) return false;
+   m_LblTP.Text("TP");
+   m_LblTP.Color(C'110,110,110');
+   m_LblTP.ColorBackground(clrWhite);
+   if(!Add(m_LblTP)) return false;
+
+   // ── TP edits stacked vertically ──────────────────────────────────
+   int ex = x + lbl_w;
+   if(!m_EdtTP.Create(m_chart_id, m_name + "_edt_TP", m_subwin,
+      ex, y, ex + edt_w, y + SPIN_H)) return false;
+   m_EdtTP.Text(FormatPoints(g_state.tp_points));
+   if(!Add(m_EdtTP)) return false;
+
+   if(!m_EdtTP2.Create(m_chart_id, m_name + "_edt_TP2", m_subwin,
+      ex, y + SPIN_H + 1, ex + edt_w, y + ROW_H)) return false;
+   m_EdtTP2.Text("");
+   if(!Add(m_EdtTP2)) return false;
+
+   // ── Spin buttons ──────────────────────────────────────────────────
+   int sx = ex + edt_w + 1;
+   if(!m_BtnTPUp.Create(m_chart_id, m_name + "_up_TP", m_subwin,
+      sx, y, sx + SPIN_W, y + SPIN_H)) return false;
+   m_BtnTPUp.Text("+");
+   m_BtnTPUp.FontSize(7);
+   if(!Add(m_BtnTPUp)) return false;
+
+   if(!m_BtnTPDn.Create(m_chart_id, m_name + "_dn_TP", m_subwin,
+      sx, y + SPIN_H + 1, sx + SPIN_W, y + ROW_H)) return false;
+   m_BtnTPDn.Text("-");
+   m_BtnTPDn.FontSize(7);
+   if(!Add(m_BtnTPDn)) return false;
+
+   RefreshTPLabelUI();
+   return true;
+  }
+
 void CLotForgePanel::SyncEditableFieldsToState(const bool include_primary)
   {
    double val = 0.0;
@@ -138,7 +181,31 @@ void CLotForgePanel::SyncEditableFieldsToState(const bool include_primary)
    if(ParseDoubleText(m_EdtEntry.Text(), val))
       g_state.entry_price = (val <= 0.0) ? 0.0 : NormalizePriceValue(val);
 
-   if(ParseDoubleText(m_EdtTP.Text(), val))
+   if(g_state.tp_btn_state >= 1)
+     {
+      double old_tp1 = g_state.tp1_points;
+      double old_tp2 = g_state.tp2_points;
+      double next_tp1 = g_state.tp1_points;
+      double next_tp2 = g_state.tp2_points;
+      bool has_tp1 = ParseDoubleText(m_EdtTP.Text(), val);
+      if(has_tp1)
+         next_tp1 = MathMax(0.0, MathRound(val));
+
+      bool has_tp2 = ParseDoubleText(m_EdtTP2.Text(), val);
+      if(has_tp2)
+         next_tp2 = MathMax(0.0, MathRound(val));
+
+      g_state.tp1_points = next_tp1;
+      if(has_tp2)
+        {
+         g_state.tp2_points = next_tp2;
+         if(next_tp2 != old_tp2)
+            g_state.tp2_linked = false;
+        }
+      EnforceDualTpInvariant(next_tp1 != old_tp1, has_tp2);
+      tp_changed = (g_state.tp1_points != old_tp1 || g_state.tp2_points != old_tp2);
+     }
+   else if(ParseDoubleText(m_EdtTP.Text(), val))
      {
       double next_tp = MathMax(0.0, MathRound(val));
       tp_changed = (next_tp != g_state.tp_points);
@@ -197,11 +264,7 @@ bool CLotForgePanel::CreatePanel(const long chart, const string name,
    cy += ROW_H + ROW_GAP;
 
    // ── Row 2: TP group + SL group (same symmetric columns) ────────
-   if(!CreateInlineGroup(cx, cy,
-         m_LblTP, "TP",
-         m_EdtTP, FormatPoints(g_state.tp_points),
-         m_BtnTPUp, m_BtnTPDn,
-         INLINE_LABEL_W, sym_edt_w)) return false;
+   if(!CreateTPGroup(cx, cy, INLINE_LABEL_W, sym_edt_w)) return false;
    int rx2 = cx + sym_col_w + COL_GAP;
    if(!CreateInlineGroup(rx2, cy,
          m_LblSL, "SL",
@@ -383,8 +446,16 @@ void CLotForgePanel::RefreshValues(void)
    string entry_text = g_state.entry_price <= 0.0 ? "0" : FormatPrice(g_state.entry_price);
    if(m_EdtEntry.Text() != entry_text) m_EdtEntry.Text(entry_text);
 
-   string tp_text = FormatPoints(g_state.tp_points);
-   if(m_EdtTP.Text() != tp_text) m_EdtTP.Text(tp_text);
+   RefreshTPLabelUI();
+   string tp_text_1 = (g_state.tp_btn_state >= 1)
+                      ? FormatPoints(g_state.tp1_points)
+                      : FormatPoints(g_state.tp_points);
+   if(m_EdtTP.Text() != tp_text_1) m_EdtTP.Text(tp_text_1);
+
+   string tp_text_2 = (g_state.tp_btn_state >= 1)
+                      ? FormatPoints(g_state.tp2_points)
+                      : "";
+   if(m_EdtTP2.Text() != tp_text_2) m_EdtTP2.Text(tp_text_2);
 
    string sl_text = FormatPoints(g_state.sl_points);
    if(m_EdtSL.Text() != sl_text) m_EdtSL.Text(sl_text);
@@ -507,6 +578,8 @@ CompactEditTarget CLotForgePanel::ResolveEditTarget(const string obj_name)
       return EDIT_TARGET_ENTRY;
    if(obj_name == prefix + "_edt_tp")
       return EDIT_TARGET_TP;
+   if(obj_name == prefix + "_edt_tp2")
+      return EDIT_TARGET_TP;
    if(obj_name == prefix + "_edt_sl")
       return EDIT_TARGET_SL;
 
@@ -586,7 +659,11 @@ void CLotForgePanel::BringPanelToFront(void)
    if(was_min)
       CAppDialog::Minimize();
    else
+     {
       CAppDialog::Maximize();
+      // Show() above re-shows all children; restore TP2 visibility to match mode.
+      RefreshTPLabelUI();
+     }
 
    RememberPanelState();
   }
@@ -644,6 +721,9 @@ void CLotForgePanel::Maximize(void)
 
    m_norm_rect.Move(g_state.panel_x, g_state.panel_y);
    CAppDialog::Maximize();
+   // CAppDialog::Maximize() calls Show() on all children, including m_EdtTP2.
+   // Re-apply visibility so TP2 only appears in dual-TP mode.
+   RefreshTPLabelUI();
    RememberPanelState();
   }
 
@@ -670,7 +750,9 @@ void CLotForgePanel::OnClickRiskMode(void)
          g_state.risk_percent = next_risk_pct;
       else
         {
-         g_state.risk_percent = 0.0;
+         // Conversão sem entry/SL — manter valor atual ou usar default
+         if(g_state.risk_percent <= 0.0)
+            g_state.risk_percent = InpRiskPercent;
          if(sync_reason != "")
             Print("[RISK MODE] Falha ao sincronizar Lots -> %: ", sync_reason);
          SetStatus("Modo Risk%: sem conversao valida; ajuste o percentual manualmente.");
@@ -684,7 +766,9 @@ void CLotForgePanel::OnClickRiskMode(void)
          g_state.risk_money = NormalizeDouble(balance * g_state.risk_percent / 100.0, 2);
       else
         {
-         g_state.risk_money = 0.0;
+         // Sem balance ou risk_percent — manter valor atual ou usar default
+         if(g_state.risk_money <= 0.0)
+            g_state.risk_money = InpRiskMoney;
          SetStatus("Modo Money: sem conversao valida; ajuste o valor manualmente.");
         }
       next_mode = RISK_MODE_MONEY;
@@ -701,7 +785,9 @@ void CLotForgePanel::OnClickRiskMode(void)
          g_state.lots = next_lots;
       else
         {
-         g_state.lots = 0.0;
+         // Conversão sem entry/SL — manter valor atual ou usar default
+         if(g_state.lots <= 0.0)
+            g_state.lots = NormalizeVolumeValue(InpDefaultLots);
          if(sync_reason != "")
             Print("[RISK MODE] Falha ao sincronizar Money -> Lots: ", sync_reason);
          SetStatus("Modo Lots: sem conversao valida; ajuste os lotes manualmente.");
@@ -759,16 +845,81 @@ void CLotForgePanel::OnClickEntryDn(void)
    QueueUiRefresh();
   }
 
+void CLotForgePanel::RefreshTPLabelUI(void)
+  {
+   bool dual_mode = IsDualTPMode();
+   string lbl_text = dual_mode ? "TP1/2" : "TP";
+   if(m_LblTP.Text() != lbl_text) m_LblTP.Text(lbl_text);
+
+   if(dual_mode)
+     {
+      if(m_EdtTP.Height() != SPIN_H)
+         m_EdtTP.Size(m_EdtTP.Width(), SPIN_H);
+      if(!m_EdtTP2.IsVisible())
+         m_EdtTP2.Show();
+     }
+   else
+     {
+      if(m_EdtTP2.IsVisible())
+         m_EdtTP2.Hide();
+      if(m_EdtTP.Height() != EDIT_H)
+         m_EdtTP.Size(m_EdtTP.Width(), EDIT_H);
+     }
+  }
+
+void CLotForgePanel::OnClickTPLabel(void)
+  {
+   bool was_dual = IsDualTPMode();
+   g_state.tp_btn_state = was_dual ? 0 : 1;
+
+   // Entering dual mode from single: restore cached dual targets when valid,
+   // otherwise seed them from the current single TP.
+   if(!was_dual)
+     {
+      bool have_cached_dual = (g_state.tp1_points > 0.0 &&
+                               g_state.tp2_points > g_state.tp1_points);
+      if(!have_cached_dual)
+        {
+         g_state.tp1_points = g_state.tp_points;
+         g_state.tp2_points = g_state.tp1_points + DualTpGuardrailPoints();
+         g_state.tp2_linked = true;
+        }
+      EnforceDualTpInvariant(true, true);
+     }
+   else
+     {
+      // Leaving dual mode: keep the last outer target as the single TP.
+      g_state.tp_points = (g_state.tp2_points > 0.0)
+                          ? g_state.tp2_points
+                          : g_state.tp1_points;
+     }
+
+   ClearMarketPriceTargets();
+   QueueUiRefresh();
+  }
+
 void CLotForgePanel::OnClickTPUp(void)
   {
-   AdjustDistance(g_state.tp_points, +1);
+   if(g_state.tp_btn_state >= 1)
+     {
+      AdjustDistance(g_state.tp1_points, +1);
+      EnforceDualTpInvariant(true, false);
+     }
+   else
+      AdjustDistance(g_state.tp_points, +1);
    ClearMarketPriceTargets();
    QueueUiRefresh();
   }
 
 void CLotForgePanel::OnClickTPDn(void)
   {
-   AdjustDistance(g_state.tp_points, -1);
+   if(g_state.tp_btn_state >= 1)
+     {
+      AdjustDistance(g_state.tp1_points, -1);
+      EnforceDualTpInvariant(true, false);
+     }
+   else
+      AdjustDistance(g_state.tp_points, -1);
    ClearMarketPriceTargets();
    QueueUiRefresh();
   }
@@ -885,8 +1036,33 @@ void CLotForgePanel::OnEndEditTP(void)
   {
    double val;
    if(ParseDoubleText(m_EdtTP.Text(), val))
-      g_state.tp_points = MathMax(0.0, MathRound(val));
+     {
+      if(g_state.tp_btn_state >= 1)
+        {
+         g_state.tp1_points = MathMax(0.0, MathRound(val));
+         EnforceDualTpInvariant(true, false);
+        }
+      else
+         g_state.tp_points = MathMax(0.0, MathRound(val));
+     }
    ClearMarketPriceTargets();
+   EndActiveEdit();
+   QueueUiRefresh();
+  }
+
+void CLotForgePanel::OnEndEditTP2(void)
+  {
+   if(g_state.tp_btn_state >= 1)
+     {
+      double val;
+      if(ParseDoubleText(m_EdtTP2.Text(), val))
+        {
+         g_state.tp2_points = MathMax(0.0, MathRound(val));
+         g_state.tp2_linked = false;
+         EnforceDualTpInvariant(false, true);
+        }
+      ClearMarketPriceTargets();
+     }
    EndActiveEdit();
    QueueUiRefresh();
   }
@@ -986,7 +1162,28 @@ void ProcessUiSend()
       return;
      }
 
-   bool sent = SendSelectedOrder(plan);
+   bool sent;
+   if(IsDualTPMode())
+     {
+      // TP exit system: single order + managed partial closes at TP1/TP2 levels.
+      // Prices captured now (pre-send) so EnsureManagedState can arm the trade.
+      double tp1 = EffectiveStateTp1Price(g_state.action, plan.entry_price);
+      double tp2 = EffectiveStateTp2Price(g_state.action, plan.entry_price);
+      g_pending_tp1_price = tp1;
+      g_pending_tp2_price = tp2;
+      // Embed prices in comment for recovery on EA reload
+      string tp_tag = StringFormat(" TP1=%.5f", tp1);
+      if(tp2 > 0.0) tp_tag += StringFormat(" TP2=%.5f", tp2);
+      string orig_comment   = g_state.order_comment;
+      g_state.order_comment += tp_tag;
+      // Use TP2 as broker safety net; management handles TP1 partial close
+      plan.tp_price = tp2;
+      sent = SendSelectedOrder(plan);
+      g_state.order_comment = orig_comment;   // restore — tag is in broker comment only
+     }
+   else
+      sent = SendSelectedOrder(plan);
+
    g_ui.refresh_values = true;
 
    if(sent)

@@ -88,8 +88,13 @@ input int      InpDeviationPoints      = 20;
 input double   InpDefaultLots          = 0.01;
 input double   InpDefaultSlPoints      = 100.0;
 input double   InpDefaultTpPoints      = 100.0;
+input double   InpDefaultTp1Pct        = 50.0;   // % do lote para TP1 (modo duplo)
+input double   InpTpSplitOffsetPoints  = 600.0;  // gap padrão TP1→TP2 em pontos
 input int      InpEntryStepPoints      = 1;
 input int      InpDistanceStepPoints   = 1;
+
+input group "=== SL Snap ==="
+input int      InpSlSnapPoints         = 15;   // limiar de snap de SL (pontos). 0 = desativado
 
 input group "=== Risco ==="
 input RiskMode InpRiskMode             = RISK_MODE_LOTS;
@@ -110,6 +115,8 @@ input int      InpBEProtectOffsetPts   = 1;      // BE protect offset em pontos 
 input double   InpBETriggerTargetPct   = 50.0;   // Auto BE: gatilho em % do caminho até o TP (1..100)
 input double   InpAlgoPartialTrigger   = 60.0;   // Gatilho parcial: % do caminho até o TP
 input double   InpAlgoPartialClosePct  = 50.0;   // Fechamento parcial: % da posição a fechar
+input double   InpTP1ClosePct          = 50.0;   // TP Exit: % do volume original a fechar em TP1
+input double   InpTP2ClosePct          = 100.0;  // TP Exit: % do volume restante a fechar em TP2
 input int      InpTrailingDistPts      = 0;      // Distância trailing em pontos (0 = usa risco inicial)
 input bool     InpTrailingRequiresBE   = true;   // Trailing só atua após BE ativo na posição
 
@@ -124,6 +131,8 @@ input bool     InpShowMidTargetBlock   = true;   // Mostrar bloco de alvo médio
 const string PANEL_PREFIX          = "LFP_";
 const string PREV_PFX              = "LFP_prev_";
 const string MNGD_PFX             = "LFP_mngd_";   // managed open-trade markers
+const string SLDR_PFX              = "LFP_sldr_";   // managed SL drag lines (snap entre posições)
+const string TP1DR_PFX             = "LFP_tp1dr_";  // managed TP1 exit drag lines
 
 const string PANEL_TITLE           = "LotForge Manager v1.1";
 const string PANEL_NAME            = "LotForgeMgr";            // nome interno do CAppDialog (sem espaços)
@@ -262,6 +271,14 @@ struct PanelState
    double            market_tp_price;
    string            order_comment;
 
+   int               tp_btn_state;       // 0=single, 1=dual (TP1/2)
+   double            tp1_points;         // distância TP1 (modo duplo)
+   double            tp2_points;         // distância TP2 (modo duplo)
+   double            tp1_lot_pct;        // % de lote para TP1
+   bool              tp2_linked;         // TP2 segue TP1 + offset automaticamente
+   double            market_tp1_price;   // preço absoluto TP1 em market orders
+   double            market_tp2_price;   // preço absoluto TP2 em market orders
+
    RiskMode          risk_mode;
    double            risk_percent;
    double            risk_money;
@@ -302,6 +319,12 @@ struct ManagedTradeState
    double   initial_sl;
    double   initial_tp;
    double   initial_risk_points;   // risco original — nunca recalculado após SL movido
+   double   initial_volume;        // volume na entrada — denominador do cálculo de TP1
+   double   managed_tp1_price;     // preço TP1 para saída parcial gerenciada (0 = não definido)
+   double   managed_tp2_price;     // preço TP2 para saída final gerenciada (0 = não definido)
+   bool     tp_exits_enabled;      // true quando TP1/TP2 gerenciados estão ativos
+   bool     tp1_done;              // fechamento em TP1 já executado
+   bool     tp2_done;              // fechamento em TP2 já executado
    bool     be_applied;            // BE já foi aplicado nesta posição
    bool     partial_done;          // fechamento parcial já executado
    bool     trailing_armed;        // trailing armado manualmente
@@ -357,6 +380,13 @@ struct PreviewSnapshot
    string            sl_label;
    string            tp_label;
 
+   double            tp1_price;
+   double            tp2_price;
+   string            tp1_line_tooltip;
+   string            tp2_line_tooltip;
+   string            tp1_label;
+   string            tp2_label;
+
    void              Clear();
   };
 
@@ -392,6 +422,10 @@ struct PreviewFinancialKey
    double            tp_points;
    double            account_balance;
    ulong             metadata_revision;
+   int               tp_btn_state;
+   double            tp1_points;
+   double            tp2_points;
+   double            tp1_lot_pct;
 
    void              Clear();
   };
@@ -471,6 +505,12 @@ void    SyncMarketPointsFromAbsoluteTargets(const double entry_price);
 double  EffectiveStateEntryPrice(const TradePanelAction action);
 double  EffectiveStateSLPrice(const TradePanelAction action, const double entry_price);
 double  EffectiveStateTPPrice(const TradePanelAction action, const double entry_price);
+bool    IsDualTPMode();
+double  DualTpGuardrailPoints();
+void    EnforceDualTpInvariant(const bool tp1_changed = false,
+                               const bool tp2_changed = false);
+double  EffectiveStateTp1Price(const TradePanelAction action, const double entry_price);
+double  EffectiveStateTp2Price(const TradePanelAction action, const double entry_price);
 bool    BuildTradePlan(TradeParams &params, string &out_reason);
 bool    CalcLotsFromRiskMoney(const double entry_price, const double sl_price,
                               const double risk_money, const bool is_buy,
@@ -576,6 +616,7 @@ private:
    // ── Row 2: TP + SL ────────────────────────────────────────────
    CButton        m_LblTP;
    CEdit          m_EdtTP;
+   CEdit          m_EdtTP2;
    CButton        m_BtnTPUp;
    CButton        m_BtnTPDn;
    CButton        m_LblSL;
@@ -610,6 +651,8 @@ private:
                      CButton &btn_up, CButton &btn_dn,
                      const int lbl_w, const int edt_w);
    bool           CreateRiskModeGroup(const int x, const int y,
+                     const int lbl_w, const int edt_w);
+   bool           CreateTPGroup(const int x, const int y,
                      const int lbl_w, const int edt_w);
    void           SyncEditableFieldsToState(const bool include_primary = true);
 
@@ -646,6 +689,8 @@ public:
    void           OnClickPrimaryDn(void);
    void           OnClickEntryUp(void);
    void           OnClickEntryDn(void);
+   void           OnClickTPLabel(void);
+   void           RefreshTPLabelUI(void);
    void           OnClickTPUp(void);
    void           OnClickTPDn(void);
    void           OnClickSLUp(void);
@@ -664,6 +709,7 @@ public:
    void           OnEndEditPrimary(void);
    void           OnEndEditEntry(void);
    void           OnEndEditTP(void);
+   void           OnEndEditTP2(void);
    void           OnEndEditSL(void);
 
    virtual bool   OnEvent(const int id, const long &lparam,
@@ -683,6 +729,9 @@ PreviewFinancialState g_preview_financial_state;
 UiDispatchState  g_ui;
 CTrade           g_trade;
 CLotForgePanel   g_panel;
+// True only while g_panel has been successfully created in the current process.
+// Persists across TF changes (REASON_CHARTCHANGE); resets to false on fresh load.
+bool             g_panel_initialized  = false;
 
 DragPhase        g_drag_phase        = DRAG_IDLE;
 string           g_drag_line_kind    = "";
@@ -723,6 +772,12 @@ bool             g_ui_interaction_active = false;
 ManagedTradeState  g_managed_trades[];
 bool               g_algo_trading_enabled = false;   // estado lógico do Algo Trading
 bool               g_managed_marker_cleanup_pending = true;
+double             g_combined_sl_handled[];           // SL prices já combinados neste ciclo de refresh
+bool               g_tp_exits_active = false;         // true quando algum trade tem tp_exits_enabled
+double             g_pending_tp1_price = 0.0;         // TP1 price set by ProcessUiSend, consumed by EnsureManagedState
+double             g_pending_tp2_price = 0.0;         // TP2 price set by ProcessUiSend, consumed by EnsureManagedState
+bool               g_tp1_drag_active = false;         // custom MOUSE_MOVE drag in progress for TP1 line
+ulong              g_tp1_drag_ticket = 0;             // ticket of the TP1 line being dragged
 ulong              g_perf_preview_geometry_refresh_count = 0;
 ulong              g_perf_preview_financial_refresh_count = 0;
 ulong              g_perf_preview_overlay_only_refresh_count = 0;
@@ -757,6 +812,12 @@ int OnInit()
 
    // ── Detectar se é mudança de TF: g_panel e chart objects já existem ─
    bool chart_change = RestoreStateFromChartChange();
+   // Guard: the GV "valid" alone is not enough — it can survive a crash or restart.
+   // g_panel_initialized is a C++ global: true only when CreatePanel() succeeded in
+   // this process lifetime.  It is never written on REASON_CHARTCHANGE, so a genuine
+   // TF switch keeps it true while a fresh MT5 start always sees false.
+   if(chart_change && !g_panel_initialized)
+      chart_change = false;
 
    if(chart_change)
      {
@@ -786,6 +847,10 @@ int OnInit()
    g_state.sl_points   = init_dist;
    g_state.tp_points   = MathRound(init_dist * 1.5);   // 1:1.5 RR default
 
+   // Purge any orphaned CAppDialog objects left by a crash or incomplete teardown.
+   // DeleteByPrefix() only covers "LFP_*"; CAppDialog creates "LotForgeMgr*" names
+   // that are saved in the chart template and reloaded on restart.
+   ObjectsDeleteAll(0, PANEL_NAME);
    DeleteByPrefix();
    g_trade_plan.Clear();
 
@@ -797,6 +862,7 @@ int OnInit()
       Print("ERRO: falha ao criar painel CAppDialog");
       return INIT_FAILED;
      }
+   g_panel_initialized = true;
 
    g_panel.Run();
 
@@ -843,6 +909,7 @@ void OnDeinit(const int reason)
    DeletePreviewObjects();
    EraseAllManagedTradeMarkers();
    g_panel.Destroy(reason);
+   g_panel_initialized = false;
    DeleteByPrefix();
    RequestChartRedraw();
    FlushPendingChartRedraw();
@@ -866,7 +933,8 @@ void OnTick()
    //       Executa se: Auto BE / Auto Trailing / Algo Trading ativos
    if(g_state.break_even_enabled  ||
       g_state.trailing_stop_enabled ||
-      g_algo_trading_enabled)
+      g_algo_trading_enabled        ||
+      g_tp_exits_active)
      {
       RunAutomatedTradeManagement();
      }
@@ -901,6 +969,17 @@ void OnChartEvent(const int id,
                   const double &dparam,
                   const string &sparam)
   {
+   // ── Native line drag — handle FIRST, before panel, to avoid interception ──
+   // CHARTEVENT_OBJECT_DRAG fires on mouse release; read new OBJPROP_PRICE
+   // before CAppDialog::ChartEvent has any chance to run.
+   if(id == CHARTEVENT_OBJECT_DRAG)
+     {
+      TrackUiInteractionEvent(id, lparam, dparam, sparam);  // may call EndActiveEdit
+      HandleNativeLineDrag(sparam);
+      FlushPendingChartRedraw();
+      return;
+     }
+
    // ── PS pattern: filter CHART_CHANGE from CAppDialog ───────────────
    //  Position Sizer does: if (id != CHARTEVENT_CHART_CHANGE) ExtDialog.OnEvent(...)
    //  This avoids a known minimization bug on chart/TF switch and
@@ -923,14 +1002,6 @@ void OnChartEvent(const int id,
          if(!RefreshManagedTradeMarkersGeometryOnly())
             RefreshAllManagedTradeMarkers();
         }
-      FlushPendingChartRedraw();
-      return;
-     }
-
-   // ── Native line drag (Position-Sizer pattern) ─────────────────────
-   if(id == CHARTEVENT_OBJECT_DRAG)
-     {
-      HandleNativeLineDrag(sparam);
       FlushPendingChartRedraw();
       return;
      }
