@@ -482,7 +482,6 @@ double  CurrentMidPrice();
 bool    ParseDoubleText(string text, double &value);
 void    ClearMarketPriceTargets();
 void    ArmMarketPriceTargetsFromCurrentPoints();
-void    SyncMarketPointsFromAbsoluteTargets(const double entry_price);
 double  EffectiveStateEntryPrice(const TradePanelAction action);
 double  EffectiveStateSLPrice(const TradePanelAction action, const double entry_price);
 double  EffectiveStateTPPrice(const TradePanelAction action, const double entry_price);
@@ -555,6 +554,7 @@ bool    HandlePanelEdgeGrabDrag(const int mx, const int my, const bool btn_down)
 void    SaveStateForChartChange();
 bool    RestoreStateFromChartChange();
 void    SaveSessionState();
+void    DeleteSessionState();
 void    RestoreSessionState();
 double  CalcSmartInitDistance();
 void    EraseOverlayLabel(const string kind);
@@ -884,7 +884,10 @@ void OnDeinit(const int reason)
    // ── Teardown completo para todos os outros motivos de deinit ─────────
    g_state.panel_x = (int)g_panel.Left();
    g_state.panel_y = (int)g_panel.Top();
-   SaveSessionState();
+   if(reason == REASON_PARAMETERS)
+      DeleteSessionState();
+   else
+      SaveSessionState();
    DeletePreviewObjects();
    EraseAllManagedTradeMarkers();
    g_panel.Destroy(reason);

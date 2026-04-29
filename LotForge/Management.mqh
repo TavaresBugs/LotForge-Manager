@@ -1107,7 +1107,7 @@ void UpdateManagedTradeMarkers(const ulong ticket)
          if(ObjectFind(0, tp1dr_name) < 0)
            {
             ObjectCreate(0, tp1dr_name, OBJ_HLINE, 0, 0, tp1_drag_price);
-            ObjectSetInteger(0, tp1dr_name, OBJPROP_COLOR,      CLR_PREV_SL_BORDER);
+            ObjectSetInteger(0, tp1dr_name, OBJPROP_COLOR,      CLR_SL_LINE);
             ObjectSetInteger(0, tp1dr_name, OBJPROP_STYLE,      STYLE_DASHDOT);
             ObjectSetInteger(0, tp1dr_name, OBJPROP_WIDTH,      1);
             ObjectSetInteger(0, tp1dr_name, OBJPROP_BACK,       false);
@@ -1120,7 +1120,7 @@ void UpdateManagedTradeMarkers(const ulong ticket)
            {
             if(!g_tp1_drag_active || g_tp1_drag_ticket != g_managed_trades[mgd_idx].ticket)
                ObjectSetDouble(0, tp1dr_name, OBJPROP_PRICE, tp1_drag_price);
-            ObjectSetInteger(0, tp1dr_name, OBJPROP_COLOR,      CLR_PREV_SL_BORDER);
+            ObjectSetInteger(0, tp1dr_name, OBJPROP_COLOR,      CLR_SL_LINE);
             ObjectSetInteger(0, tp1dr_name, OBJPROP_STYLE,      STYLE_DASHDOT);
             ObjectSetInteger(0, tp1dr_name, OBJPROP_WIDTH,      1);
             ObjectSetInteger(0, tp1dr_name, OBJPROP_SELECTABLE, false);
@@ -1453,6 +1453,7 @@ bool RestoreStateFromChartChange()
 void SaveSessionState()
   {
    GlobalVariableSet(GV_PFX + "ssn",        1.0);
+   GlobalVariableSet(GV_PFX + "ssn_sig",    1.0);
    GlobalVariableSet(GV_PFX + "ssn_lots",   g_state.lots);
    GlobalVariableSet(GV_PFX + "ssn_rmode",  (double)g_state.risk_mode);
    GlobalVariableSet(GV_PFX + "ssn_rpct",   g_state.risk_percent);
@@ -1470,6 +1471,38 @@ void SaveSessionState()
    GlobalVariableSet(GV_PFX + "ssn_tp2",    g_state.tp2_points);
    GlobalVariableSet(GV_PFX + "ssn_tp1pct", g_state.tp1_lot_pct);
    GlobalVariableSet(GV_PFX + "ssn_tp2lnk", g_state.tp2_linked ? 1.0 : 0.0);
+   GlobalVariableSet(GV_PFX + "ssn_in_lots",    InpDefaultLots);
+   GlobalVariableSet(GV_PFX + "ssn_in_rmode",   (double)InpRiskMode);
+   GlobalVariableSet(GV_PFX + "ssn_in_rpct",    InpRiskPercent);
+   GlobalVariableSet(GV_PFX + "ssn_in_rmoney",  InpRiskMoney);
+   GlobalVariableSet(GV_PFX + "ssn_in_sl",      InpDefaultSlPoints);
+   GlobalVariableSet(GV_PFX + "ssn_in_tp",      InpDefaultTpPoints);
+   GlobalVariableSet(GV_PFX + "ssn_in_tp1pct",  InpDefaultTp1Pct);
+   GlobalVariableSet(GV_PFX + "ssn_in_tpsplit", InpTpSplitOffsetPoints);
+  }
+
+void DeleteSessionState()
+  {
+   string keys[] =
+     {
+      "ssn", "ssn_sig", "ssn_lots", "ssn_rmode", "ssn_rpct", "ssn_rmoney",
+      "ssn_entry", "ssn_sl", "ssn_tp", "ssn_msl", "ssn_mtp", "ssn_px", "ssn_py",
+      "ssn_mini", "ssn_tpbtn", "ssn_tp1", "ssn_tp2", "ssn_tp1pct", "ssn_tp2lnk",
+      "ssn_in_lots", "ssn_in_rmode", "ssn_in_rpct", "ssn_in_rmoney",
+      "ssn_in_sl", "ssn_in_tp", "ssn_in_tp1pct", "ssn_in_tpsplit"
+     };
+   for(int i = 0; i < ArraySize(keys); i++)
+      GlobalVariableDel(GV_PFX + keys[i]);
+  }
+
+bool SessionInputMatchesDouble(const string suffix,
+                               const double current_value,
+                               const double tolerance = 1e-8)
+  {
+   string key = GV_PFX + suffix;
+   if(!GlobalVariableCheck(key))
+      return false;
+   return (MathAbs(GlobalVariableGet(key) - current_value) <= tolerance);
   }
 
 void RestoreSessionState()
@@ -1477,20 +1510,38 @@ void RestoreSessionState()
    if(!GlobalVariableCheck(GV_PFX + "ssn")) return;
    if(GlobalVariableGet(GV_PFX + "ssn") != 1.0) return;
 
+   bool has_input_signature = (GlobalVariableCheck(GV_PFX + "ssn_sig") &&
+                               GlobalVariableGet(GV_PFX + "ssn_sig") == 1.0);
+   bool restore_lots        = (has_input_signature &&
+                               SessionInputMatchesDouble("ssn_in_lots", InpDefaultLots));
+   bool restore_rmode       = (has_input_signature &&
+                               SessionInputMatchesDouble("ssn_in_rmode", (double)InpRiskMode, 0.0));
+   bool restore_rpct        = (has_input_signature &&
+                               SessionInputMatchesDouble("ssn_in_rpct", InpRiskPercent));
+   bool restore_rmoney      = (has_input_signature &&
+                               SessionInputMatchesDouble("ssn_in_rmoney", InpRiskMoney));
+   bool restore_sl          = (has_input_signature &&
+                               SessionInputMatchesDouble("ssn_in_sl", InpDefaultSlPoints));
+   bool restore_tp_defaults = (has_input_signature &&
+                               SessionInputMatchesDouble("ssn_in_tp", InpDefaultTpPoints) &&
+                               SessionInputMatchesDouble("ssn_in_tpsplit", InpTpSplitOffsetPoints));
+   bool restore_tp1pct      = (has_input_signature &&
+                               SessionInputMatchesDouble("ssn_in_tp1pct", InpDefaultTp1Pct));
+
    double v;
-   if(GlobalVariableCheck(GV_PFX + "ssn_lots"))
+   if(restore_lots && GlobalVariableCheck(GV_PFX + "ssn_lots"))
      { v = GlobalVariableGet(GV_PFX + "ssn_lots"); if(v > 0.0) g_state.lots = v; }
-   if(GlobalVariableCheck(GV_PFX + "ssn_rmode"))
+   if(restore_rmode && GlobalVariableCheck(GV_PFX + "ssn_rmode"))
       g_state.risk_mode = (RiskMode)(int)GlobalVariableGet(GV_PFX + "ssn_rmode");
-   if(GlobalVariableCheck(GV_PFX + "ssn_rpct"))
+   if(restore_rpct && GlobalVariableCheck(GV_PFX + "ssn_rpct"))
      { v = GlobalVariableGet(GV_PFX + "ssn_rpct"); if(v > 0.0) g_state.risk_percent = v; }
-   if(GlobalVariableCheck(GV_PFX + "ssn_rmoney"))
+   if(restore_rmoney && GlobalVariableCheck(GV_PFX + "ssn_rmoney"))
      { v = GlobalVariableGet(GV_PFX + "ssn_rmoney"); if(v > 0.0) g_state.risk_money = v; }
    if(GlobalVariableCheck(GV_PFX + "ssn_entry"))
       g_state.entry_price = GlobalVariableGet(GV_PFX + "ssn_entry");
-   if(GlobalVariableCheck(GV_PFX + "ssn_sl"))
+   if(restore_sl && GlobalVariableCheck(GV_PFX + "ssn_sl"))
      { v = GlobalVariableGet(GV_PFX + "ssn_sl"); if(v > 0.0) g_state.sl_points = v; }
-   if(GlobalVariableCheck(GV_PFX + "ssn_tp"))
+   if(restore_tp_defaults && GlobalVariableCheck(GV_PFX + "ssn_tp"))
      { v = GlobalVariableGet(GV_PFX + "ssn_tp"); if(v > 0.0) g_state.tp_points = v; }
    if(GlobalVariableCheck(GV_PFX + "ssn_msl"))
       g_state.market_sl_price = GlobalVariableGet(GV_PFX + "ssn_msl");
@@ -1504,13 +1555,13 @@ void RestoreSessionState()
       g_state.minimized = GlobalVariableGet(GV_PFX + "ssn_mini") > 0.5;
    if(GlobalVariableCheck(GV_PFX + "ssn_tpbtn"))
       g_state.tp_btn_state = (int)GlobalVariableGet(GV_PFX + "ssn_tpbtn") > 0 ? 1 : 0;
-   if(GlobalVariableCheck(GV_PFX + "ssn_tp1"))
+   if(restore_tp_defaults && GlobalVariableCheck(GV_PFX + "ssn_tp1"))
      { v = GlobalVariableGet(GV_PFX + "ssn_tp1"); if(v > 0.0) g_state.tp1_points = v; }
-   if(GlobalVariableCheck(GV_PFX + "ssn_tp2"))
+   if(restore_tp_defaults && GlobalVariableCheck(GV_PFX + "ssn_tp2"))
      { v = GlobalVariableGet(GV_PFX + "ssn_tp2"); if(v > 0.0) g_state.tp2_points = v; }
-   if(GlobalVariableCheck(GV_PFX + "ssn_tp1pct"))
+   if(restore_tp1pct && GlobalVariableCheck(GV_PFX + "ssn_tp1pct"))
      { v = GlobalVariableGet(GV_PFX + "ssn_tp1pct"); if(v > 0.0) g_state.tp1_lot_pct = v; }
-   if(GlobalVariableCheck(GV_PFX + "ssn_tp2lnk"))
+   if(restore_tp_defaults && GlobalVariableCheck(GV_PFX + "ssn_tp2lnk"))
       g_state.tp2_linked = GlobalVariableGet(GV_PFX + "ssn_tp2lnk") > 0.5;
 
    if(IsDualTPMode())

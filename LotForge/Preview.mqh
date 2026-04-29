@@ -813,9 +813,6 @@ bool BuildPreviewGeometrySnapshot(PreviewSnapshot &snapshot)
    if(snapshot.entry_price <= 0.0)
       return false;
 
-   if(IsMarketAction(g_state.action))
-      SyncMarketPointsFromAbsoluteTargets(snapshot.entry_price);
-
    snapshot.sl_price = EffectiveStateSLPrice(g_state.action, snapshot.entry_price);
 
    if(IsDualTPMode())
@@ -1124,7 +1121,7 @@ void RenderPreviewFromSnapshot(const PreviewSnapshot &snapshot,
       EraseOverlayLabel("tp");
 
       if(snapshot.tp1_price > 0.0)
-         EnsurePreviewLine("tp1", snapshot.tp1_price, CLR_TP_LINE, STYLE_DOT, 1,
+         EnsurePreviewLine("tp1", snapshot.tp1_price, CLR_SL_LINE, STYLE_DOT, 1,
                            snapshot.tp1_line_tooltip);
       else
         {

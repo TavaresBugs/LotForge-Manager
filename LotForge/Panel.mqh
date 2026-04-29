@@ -219,7 +219,12 @@ void CLotForgePanel::SyncEditableFieldsToState(const bool include_primary)
      }
 
    if(tp_changed || sl_changed)
-      ClearMarketPriceTargets();
+     {
+      if(IsMarketAction(g_state.action))
+         ArmMarketPriceTargetsFromCurrentPoints();
+      else
+         ClearMarketPriceTargets();
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -802,9 +807,9 @@ void CLotForgePanel::OnClickPrimaryUp(void)
      { g_state.risk_percent = NormalizeDouble(g_state.risk_percent + 0.25, 2); }
    else if(g_state.risk_mode == RISK_MODE_MONEY)
      {
-      double step = (g_state.risk_money < 10.0)  ? 0.50
-                  : (g_state.risk_money < 100.0) ? 1.00
-                  : (g_state.risk_money < 1000.0)? 5.00
+      double step = (g_state.risk_money < 10.0)  ? 0.01
+                  : (g_state.risk_money < 100.0) ? 0.10
+                  : (g_state.risk_money < 1000.0)? 1.00
                   : 10.00;
       g_state.risk_money = NormalizeDouble(g_state.risk_money + step, 2);
      }
@@ -819,9 +824,9 @@ void CLotForgePanel::OnClickPrimaryDn(void)
      { g_state.risk_percent = MathMax(0.0, NormalizeDouble(g_state.risk_percent - 0.25, 2)); }
    else if(g_state.risk_mode == RISK_MODE_MONEY)
      {
-      double step = (g_state.risk_money <= 10.0)  ? 0.50
-                  : (g_state.risk_money <= 100.0) ? 1.00
-                  : (g_state.risk_money <= 1000.0)? 5.00
+      double step = (g_state.risk_money <= 10.0)  ? 0.01
+                  : (g_state.risk_money <= 100.0) ? 0.10
+                  : (g_state.risk_money <= 1000.0)? 1.00
                   : 10.00;
       g_state.risk_money = MathMax(0.0, NormalizeDouble(g_state.risk_money - step, 2));
      }
@@ -891,7 +896,10 @@ void CLotForgePanel::OnClickTPLabel(void)
                           : g_state.tp1_points;
      }
 
-   ClearMarketPriceTargets();
+   if(IsMarketAction(g_state.action))
+      ArmMarketPriceTargetsFromCurrentPoints();
+   else
+      ClearMarketPriceTargets();
    QueueUiRefresh();
   }
 
@@ -904,7 +912,10 @@ void CLotForgePanel::OnClickTPUp(void)
      }
    else
       AdjustDistance(g_state.tp_points, +1);
-   ClearMarketPriceTargets();
+   if(IsMarketAction(g_state.action))
+      ArmMarketPriceTargetsFromCurrentPoints();
+   else
+      ClearMarketPriceTargets();
    QueueUiRefresh();
   }
 
@@ -917,21 +928,30 @@ void CLotForgePanel::OnClickTPDn(void)
      }
    else
       AdjustDistance(g_state.tp_points, -1);
-   ClearMarketPriceTargets();
+   if(IsMarketAction(g_state.action))
+      ArmMarketPriceTargetsFromCurrentPoints();
+   else
+      ClearMarketPriceTargets();
    QueueUiRefresh();
   }
 
 void CLotForgePanel::OnClickSLUp(void)
   {
    AdjustDistance(g_state.sl_points, +1);
-   ClearMarketPriceTargets();
+   if(IsMarketAction(g_state.action))
+      ArmMarketPriceTargetsFromCurrentPoints();
+   else
+      ClearMarketPriceTargets();
    QueueUiRefresh();
   }
 
 void CLotForgePanel::OnClickSLDn(void)
   {
    AdjustDistance(g_state.sl_points, -1);
-   ClearMarketPriceTargets();
+   if(IsMarketAction(g_state.action))
+      ArmMarketPriceTargetsFromCurrentPoints();
+   else
+      ClearMarketPriceTargets();
    QueueUiRefresh();
   }
 
@@ -1033,7 +1053,10 @@ void CLotForgePanel::OnEndEditTP(void)
       else
          g_state.tp_points = MathMax(0.0, MathRound(val));
      }
-   ClearMarketPriceTargets();
+   if(IsMarketAction(g_state.action))
+      ArmMarketPriceTargetsFromCurrentPoints();
+   else
+      ClearMarketPriceTargets();
    EndActiveEdit();
    QueueUiRefresh();
   }
@@ -1049,7 +1072,10 @@ void CLotForgePanel::OnEndEditTP2(void)
          g_state.tp2_linked = false;
          EnforceDualTpInvariant(false, true);
         }
-      ClearMarketPriceTargets();
+      if(IsMarketAction(g_state.action))
+         ArmMarketPriceTargetsFromCurrentPoints();
+      else
+         ClearMarketPriceTargets();
      }
    EndActiveEdit();
    QueueUiRefresh();
@@ -1060,7 +1086,10 @@ void CLotForgePanel::OnEndEditSL(void)
    double val;
    if(ParseDoubleText(m_EdtSL.Text(), val))
       g_state.sl_points = MathMax(0.0, MathRound(val));
-   ClearMarketPriceTargets();
+   if(IsMarketAction(g_state.action))
+      ArmMarketPriceTargetsFromCurrentPoints();
+   else
+      ClearMarketPriceTargets();
    EndActiveEdit();
    QueueUiRefresh();
   }

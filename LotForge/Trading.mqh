@@ -546,9 +546,6 @@ bool BuildTradePlan(TradeParams &params, string &out_reason)
      { out_reason = "Preço de entrada indisponível."; return false; }
    params.entry_price = NormalizePriceValue(entry);
 
-   if(is_market)
-      SyncMarketPointsFromAbsoluteTargets(params.entry_price);
-
    // ── 2. SL / TP prices from effective state ───────────────────────
    params.sl_price  = EffectiveStateSLPrice(g_state.action, params.entry_price);
    params.tp_price  = EffectiveStateTPPrice(g_state.action, params.entry_price);
@@ -1115,4 +1112,3 @@ bool SendSelectedOrder(const TradeParams &plan)
       return false;
      }
   }
-

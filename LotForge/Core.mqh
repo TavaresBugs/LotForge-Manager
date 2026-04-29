@@ -480,26 +480,6 @@ void ArmMarketPriceTargetsFromCurrentPoints()
      }
   }
 
-void SyncMarketPointsFromAbsoluteTargets(const double entry_price)
-  {
-   if(!IsMarketAction(g_state.action) || entry_price <= 0.0)
-      return;
-
-   if(g_state.market_sl_price > 0.0)
-      g_state.sl_points = MathMax(0.0, MathRound(MathAbs(g_state.market_sl_price - entry_price) / _Point));
-   if(g_state.market_tp_price > 0.0)
-      g_state.tp_points = MathMax(0.0, MathRound(MathAbs(g_state.market_tp_price - entry_price) / _Point));
-   if(IsDualTPMode())
-     {
-      if(g_state.market_tp1_price > 0.0)
-         g_state.tp1_points = MathMax(0.0, MathRound(MathAbs(g_state.market_tp1_price - entry_price) / _Point));
-      if(g_state.market_tp2_price > 0.0)
-         g_state.tp2_points = MathMax(0.0, MathRound(MathAbs(g_state.market_tp2_price - entry_price) / _Point));
-      // Do NOT call EnforceDualTpInvariant here — it refetches CurrentReferencePrice()
-      // which differs from entry_price and causes market_tp1/tp2_price to drift ±1pt per tick.
-     }
-  }
-
 double EffectiveStateEntryPrice(const TradePanelAction action)
   {
    if(IsMarketAction(action))
