@@ -804,7 +804,7 @@ void CLotForgePanel::OnClickRiskMode(void)
 void CLotForgePanel::OnClickPrimaryUp(void)
   {
    if(g_state.risk_mode == RISK_MODE_PERCENT)
-     { g_state.risk_percent = NormalizeDouble(g_state.risk_percent + 0.25, 2); }
+     { g_state.risk_percent = NormalizeDouble(g_state.risk_percent + 0.01, 2); }
    else if(g_state.risk_mode == RISK_MODE_MONEY)
      {
       double step = (g_state.risk_money < 10.0)  ? 0.01
@@ -821,7 +821,7 @@ void CLotForgePanel::OnClickPrimaryUp(void)
 void CLotForgePanel::OnClickPrimaryDn(void)
   {
    if(g_state.risk_mode == RISK_MODE_PERCENT)
-     { g_state.risk_percent = MathMax(0.0, NormalizeDouble(g_state.risk_percent - 0.25, 2)); }
+     { g_state.risk_percent = MathMax(0.0, NormalizeDouble(g_state.risk_percent - 0.01, 2)); }
    else if(g_state.risk_mode == RISK_MODE_MONEY)
      {
       double step = (g_state.risk_money <= 10.0)  ? 0.01

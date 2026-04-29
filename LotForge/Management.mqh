@@ -202,6 +202,7 @@ void EnsureManagedState(const ulong ticket)
    if(!PositionSelectByTicket(ticket)) return;
 
    ManagedTradeState ms;
+   ZeroMemory(ms);
    ms.ticket             = ticket;
    ms.symbol             = PositionGetString(POSITION_SYMBOL);
    ms.initial_open_price = PositionGetDouble(POSITION_PRICE_OPEN);
@@ -897,6 +898,8 @@ void UpdateManagedTradeMarkers(const ulong ticket)
    int  mgd_idx      = FindManagedIndex(ticket);
 
    double vol_step_s = EffectiveVolumeStep();
+   double vol_min_s  = SymbolVolumeMinCached();
+   double vol_max_s  = SymbolVolumeMaxCached();
 
    // ── TP markers ────────────────────────────────────────────────────
    bool tp_exits = (mgd_idx >= 0 && g_managed_trades[mgd_idx].tp_exits_enabled);
@@ -907,6 +910,18 @@ void UpdateManagedTradeMarkers(const ulong ticket)
       EraseManagedTradeMarkerKind(tk_str, "tp");
 
       double init_vol  = g_managed_trades[mgd_idx].initial_volume;
+      double min_valid_vol = MathMax(vol_step_s, vol_min_s);
+      string gv_iv = GV_PFX + "iv_" + tk_str;
+      if(init_vol < min_valid_vol ||
+         (vol_max_s > 0.0 && init_vol > vol_max_s + vol_step_s))
+        {
+         if(GlobalVariableCheck(gv_iv))
+            init_vol = GlobalVariableGet(gv_iv);
+         if(init_vol < min_valid_vol ||
+            (vol_max_s > 0.0 && init_vol > vol_max_s + vol_step_s))
+            init_vol = MathMax(volume, min_valid_vol);
+         g_managed_trades[mgd_idx].initial_volume = init_vol;
+        }
       bool   tp1_done  = g_managed_trades[mgd_idx].tp1_done;
       bool   tp2_done  = g_managed_trades[mgd_idx].tp2_done;
 

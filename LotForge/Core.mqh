@@ -346,6 +346,13 @@ bool ParseDoubleText(string text, double &value)
   {
    StringTrimLeft(text); StringTrimRight(text);
    if(StringLen(text) == 0) return false;
+   StringReplace(text, "%", "");
+   StringReplace(text, "$", "");
+   StringReplace(text, " ", "");
+   if(StringFind(text, ",") >= 0 && StringFind(text, ".") < 0)
+      StringReplace(text, ",", ".");
+   StringTrimLeft(text); StringTrimRight(text);
+   if(StringLen(text) == 0) return false;
    value = StringToDouble(text);
    return true;
   }

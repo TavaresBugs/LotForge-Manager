@@ -1502,6 +1502,8 @@ bool ApplyLineDrag(const int mx, const int my)
          g_state.tp1_points = MathMax(1.0, MathRound(MathAbs(new_price - ref_e) / _Point));
          if(is_market) g_state.market_tp1_price = new_price;
          EnforceDualTpInvariant(true, false);
+         if(is_market)
+            ArmMarketPriceTargetsFromCurrentPoints();
         }
      }
    else if(g_drag_line_kind == "tp2" && IsDualTPMode())
@@ -1516,6 +1518,8 @@ bool ApplyLineDrag(const int mx, const int my)
          if(is_market) g_state.market_tp2_price = new_price;
          g_state.tp2_linked = false;
          EnforceDualTpInvariant(false, true);
+         if(is_market)
+            ArmMarketPriceTargetsFromCurrentPoints();
         }
      }
    return (g_state.entry_price      != old_entry_price     ||
@@ -1788,6 +1792,8 @@ void HandleNativeLineDrag(const string obj_name)
          g_state.tp1_points = MathMax(1.0, MathRound(MathAbs(new_price - ref_e) / _Point));
          if(is_market) g_state.market_tp1_price = new_price;
          EnforceDualTpInvariant(true, false);
+         if(is_market)
+            ArmMarketPriceTargetsFromCurrentPoints();
         }
      }
    else if(obj_name == tp2_ln && IsDualTPMode())
@@ -1802,6 +1808,8 @@ void HandleNativeLineDrag(const string obj_name)
          if(is_market) g_state.market_tp2_price = new_price;
          g_state.tp2_linked = false;   // manual drag de-links TP2
          EnforceDualTpInvariant(false, true);
+         if(is_market)
+            ArmMarketPriceTargetsFromCurrentPoints();
         }
      }
    else

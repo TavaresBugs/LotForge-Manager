@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                              LotForge_Manager.mq5                |
-//|  LotForge Manager v1.1                                           |
+//|  LotForge Manager v1.2                                           |
 //|  CAppDialog managed panel, risk modes Lots/%/Money,              |
 //|  visual preview, managed markers and automated management        |
 //|                                                                  |
@@ -12,8 +12,8 @@
 //|  · Status/RR info shown only in preview zone text                |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.10"
-#property description "LotForge Manager v1.1"
+#property version   "1.20"
+#property description "LotForge Manager v1.2"
 
 #include <Trade/Trade.mqh>
 #include <Controls/Dialog.mqh>
@@ -122,7 +122,7 @@ const string MNGD_PFX             = "LFP_mngd_";   // managed open-trade markers
 const string SLDR_PFX              = "LFP_sldr_";   // managed SL drag lines (snap entre posições)
 const string TP1DR_PFX             = "LFP_tp1dr_";  // managed TP1 exit drag lines
 
-const string PANEL_TITLE           = "LotForge Manager v1.1";
+const string PANEL_TITLE           = "LotForge Manager v1.2";
 const string PANEL_NAME            = "LotForgeMgr";            // nome interno do CAppDialog (sem espaços)
 const string GV_PFX               = "LFG_";  // terminal GV prefix for chart-change save
 
@@ -912,7 +912,7 @@ void OnTick()
    SyncManagedTradeState();
 
    // ── 3. Pipeline de gestão automática ────────────────────────────
-   //       Executa se: Auto BE / Auto Trailing / Algo Trading ativos
+   //       Executa se: Auto BE / Auto Trailing / TP exits ativos
    if(g_state.break_even_enabled  ||
       g_state.trailing_stop_enabled ||
       g_tp_exits_active)
