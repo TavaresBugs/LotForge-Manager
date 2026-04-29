@@ -642,7 +642,7 @@ void MarkPreviewDirty()
 
 bool ShouldRefreshPreviewOnPulse()
   {
-   if(g_state.action == ACTION_NONE || !InpShowPreview)
+   if(g_state.action == ACTION_NONE)
       return false;
 
    if(g_preview_dirty ||

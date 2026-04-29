@@ -25,7 +25,6 @@ ON_EVENT(ON_CLICK, m_BtnBuyPending,   OnClickBuyPending)
 ON_EVENT(ON_CLICK, m_BtnBE,           OnClickBE)
 ON_EVENT(ON_CLICK, m_ChkAutoBE,       OnClickAutoBE)
 ON_EVENT(ON_CLICK, m_ChkAutoTrailing, OnClickAutoTrailing)
-ON_EVENT(ON_CLICK, m_BtnAlgoTrading,  OnClickAlgoTrading)
 ON_EVENT(ON_CLICK, m_BtnCancel,       OnClickCancel)
 ON_EVENT(ON_CLICK, m_BtnSend,         OnClickSend)
 ON_EVENT(ON_END_EDIT, m_EdtPrimary,   OnEndEditPrimary)
@@ -231,8 +230,7 @@ void CLotForgePanel::SyncEditableFieldsToState(const bool include_primary)
 //|  Row 2: [TP][val][±]          [SL][val][±]                       |
 //|  Row 3: [Sell 145]  [BE ~46]  [Buy 145]                         |
 //|  Row 4: [Sell Pending]        [Buy Pending]                      |
-//|  Row 5: [☐ Algo Trading]                      (full width)       |
-//|  Row 6: [Cancel]              [Send]                             |
+//|  Row 5: [Cancel]              [Send]                             |
 //+------------------------------------------------------------------+
 
 bool CLotForgePanel::CreatePanel(const long chart, const string name,
@@ -348,20 +346,7 @@ bool CLotForgePanel::CreatePanel(const long chart, const string name,
    }
    cy += ACTION_BTN_H + ACTION_BTN_ROW_GAP;
 
-   // ── Row 6: Algo Trading (same style as Cancel/Send, checkbox) ──
-   {
-    string algo_text = g_state.algo_trading_ui_enabled ? "[X] Algo Trading" : "[ ] Algo Trading";
-    if(!m_BtnAlgoTrading.Create(chart, name + "_btn_algo", subwin,
-       cx, cy, cx + m_content_w, cy + ACTION_BTN_H)) return false;
-    m_BtnAlgoTrading.Text(algo_text);
-    m_BtnAlgoTrading.ColorBackground(g_state.algo_trading_ui_enabled ? CLR_CHK_ON_BG : CLR_NEUTRAL_BG);
-    m_BtnAlgoTrading.Color(g_state.algo_trading_ui_enabled ? clrWhite : clrBlack);
-    m_BtnAlgoTrading.ColorBorder(CLR_NEUTRAL_BORDER);
-    if(!Add(m_BtnAlgoTrading)) return false;
-   }
-   cy += ACTION_BTN_H + ACTION_BTN_ROW_GAP;
-
-   // ── Row 7: Cancel | Send ───────────────────────────────────────
+   // ── Row 6: Cancel | Send ───────────────────────────────────────
    if(!m_BtnCancel.Create(chart, name + "_btn_cancel", subwin,
       cx, cy, cx + btn_w, cy + ACTION_BTN_H)) return false;
    m_BtnCancel.Text("Cancel");
@@ -417,6 +402,19 @@ bool CLotForgePanel::CreatePanel(const long chart, const string name,
             {
              ObjectSetInteger(chart, obj_n, OBJPROP_BGCOLOR, CLR_TITLE_BTN);
              ObjectSetInteger(chart, obj_n, OBJPROP_COLOR,   clrBlack);
+            }
+         }
+       else if(otype == OBJ_BITMAP_LABEL)
+         {
+          if(sfx == "MinMax" || sfx == "Close")
+            {
+             // Raise z-order above the caption (OBJ_EDIT) so MT5 routes clicks to
+             // the button first when the cursor is inside the bitmap's 16×16 area.
+             ObjectSetInteger(chart, obj_n, OBJPROP_ZORDER, 10);
+            }
+          else if(sfx == "Caption")
+            {
+             ObjectSetInteger(chart, obj_n, OBJPROP_ZORDER, 0);
             }
          }
       }
@@ -509,11 +507,6 @@ void CLotForgePanel::RefreshBETrailingButtons(void)
    m_ChkAutoTrailing.ColorBackground(trail_on ? CLR_CHK_ON_BG : CLR_NEUTRAL_BG);
    m_ChkAutoTrailing.Color(trail_on ? clrWhite : clrBlack);
 
-   // Algo Trading checkbox
-   bool algo_on = g_state.algo_trading_ui_enabled;
-   m_BtnAlgoTrading.Text(algo_on ? "[X] Algo Trading" : "[ ] Algo Trading");
-   m_BtnAlgoTrading.ColorBackground(algo_on ? CLR_CHK_ON_BG : CLR_NEUTRAL_BG);
-   m_BtnAlgoTrading.Color(algo_on ? clrWhite : clrBlack);
   }
 
 //+------------------------------------------------------------------+
@@ -697,7 +690,11 @@ void CLotForgePanel::OnClickCaption(void)
 void CLotForgePanel::OnClickButtonMinMax(void)
   {
    CAppDialog::OnClickButtonMinMax();
-   BringPanelToFront();
+   // Do NOT call BringPanelToFront() here — its Hide()/Show() cycle can reset
+   // m_button_minmax OBJPROP_STATE, causing phantom double-toggles in MT5.
+   // Virtual Minimize()/Maximize() overrides already handle position, TP2
+   // visibility and RememberPanelState(), so nothing else is needed.
+   RememberPanelState();
   }
 
 void CLotForgePanel::Minimize(void)
@@ -997,15 +994,6 @@ void CLotForgePanel::OnClickAutoBE(void)
 void CLotForgePanel::OnClickAutoTrailing(void)
   { QueueUiCommand(UI_CMD_TOGGLE_AUTO_TRAILING); }
 
-//+------------------------------------------------------------------+
-//|  CLotForgePanel :: OnClickAlgoTrading                             |
-//|  Toggle do Algo Trading — ativa/desativa pipeline completo de     |
-//|  gestão automática: Auto BE → Parcial → Trailing pós-BE.          |
-//+------------------------------------------------------------------+
-
-void CLotForgePanel::OnClickAlgoTrading(void)
-  { QueueUiCommand(UI_CMD_TOGGLE_ALGO_TRADING); }
-
 void CLotForgePanel::OnEndEditPrimary(void)
   {
    double val;
@@ -1287,66 +1275,6 @@ void ProcessUiToggleAutoTrailing()
      }
   }
 
-void ProcessUiToggleAlgoTrading()
-  {
-   if(!TerminalInfoInteger(TERMINAL_CONNECTED))
-     {
-      SetStatus("Terminal desconectado.", true);
-      g_ui.refresh_be_trailing_buttons = true;
-      return;
-     }
-
-   bool term_allowed = (bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED);
-   bool ea_allowed   = (bool)MQLInfoInteger(MQL_TRADE_ALLOWED);
-
-   g_algo_trading_enabled          = !g_algo_trading_enabled;
-   g_state.algo_trading_ui_enabled = g_algo_trading_enabled;
-   g_ui.refresh_be_trailing_buttons = true;
-
-   if(!g_algo_trading_enabled)
-     {
-      SetStatus("Algo Trading desativado.", true);
-      return;
-     }
-
-   if(!term_allowed)
-     {
-      SetStatus("Algo Trading ativado — mas AutoTrading está DESLIGADO no terminal!", true);
-     }
-   else if(!ea_allowed)
-     {
-      SetStatus("Algo Trading ativado — mas EA sem permissão de trade (verifique propriedades).", true);
-     }
-   else
-     {
-      int count = 0;
-      for(int i = PositionsTotal() - 1; i >= 0; i--)
-        {
-         ulong t = PositionGetTicket(i);
-         if(!PositionSelectByTicket(t)) continue;
-         if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-         long magic = PositionGetInteger(POSITION_MAGIC);
-         if(magic != InpMagicNumber && magic != 0) continue;
-         EnsureManagedState(t);
-         int idx = FindManagedIndex(t);
-         if(idx >= 0)
-           {
-            g_managed_trades[idx].algo_managed   = true;
-            g_managed_trades[idx].trailing_armed = true;
-            count++;
-           }
-        }
-      if(count > 0)
-         SetStatus(StringFormat("Algo Trading ON — %d posição(ões) no pipeline (BE→Parcial→Trailing).", count), true);
-      else
-         SetStatus("Algo Trading ON — aguardando próxima posição.", true);
-     }
-
-   Print("[ALGO] g_algo_trading_enabled=", g_algo_trading_enabled,
-         "  TERMINAL_TRADE_ALLOWED=", term_allowed,
-         "  MQL_TRADE_ALLOWED=", ea_allowed);
-  }
-
 void ProcessUiDispatch()
   {
    bool has_work = g_ui.has_order_selection ||
@@ -1386,7 +1314,6 @@ void ProcessUiDispatch()
       case UI_CMD_MANUAL_TRAILING:      ProcessUiManualTrailing(); break;
       case UI_CMD_TOGGLE_AUTO_BE:       ProcessUiToggleAutoBE(); break;
       case UI_CMD_TOGGLE_AUTO_TRAILING: ProcessUiToggleAutoTrailing(); break;
-      case UI_CMD_TOGGLE_ALGO_TRADING:  ProcessUiToggleAlgoTrading(); break;
       default:                          break;
      }
 

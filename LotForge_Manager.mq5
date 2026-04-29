@@ -74,54 +74,42 @@ enum UiDispatchCommand
    UI_CMD_MANUAL_BE,
    UI_CMD_MANUAL_TRAILING,
    UI_CMD_TOGGLE_AUTO_BE,
-   UI_CMD_TOGGLE_AUTO_TRAILING,
-   UI_CMD_TOGGLE_ALGO_TRADING
+   UI_CMD_TOGGLE_AUTO_TRAILING
   };
 
 //+------------------------------------------------------------------+
 //|  ██  INPUTS                                                      |
 //+------------------------------------------------------------------+
 
-input group "=== Ordem ==="
-input long     InpMagicNumber          = 20260404;
-input int      InpDeviationPoints      = 20;
-input double   InpDefaultLots          = 0.01;
-input double   InpDefaultSlPoints      = 100.0;
-input double   InpDefaultTpPoints      = 100.0;
-input double   InpDefaultTp1Pct        = 50.0;   // % do lote para TP1 (modo duplo)
-input double   InpTpSplitOffsetPoints  = 600.0;  // gap padrão TP1→TP2 em pontos
-input int      InpEntryStepPoints      = 1;
-input int      InpDistanceStepPoints   = 1;
+input group "=== Geral ==="
+input long     InpMagicNumber          = 20260404;  // Número mágico das ordens
+input int      InpDeviationPoints      = 20;        // Slippage máximo (pontos)
 
-input group "=== SL Snap ==="
-input int      InpSlSnapPoints         = 15;   // limiar de snap de SL (pontos). 0 = desativado
+input group "=== Painel ==="
+input double   InpDefaultSlPoints      = 100.0;  // SL padrão ao iniciar (pontos)
+input double   InpDefaultTpPoints      = 100.0;  // TP padrão ao iniciar (pontos)
+input int      InpEntryStepPoints      = 1;      // Passo do campo Entrada (pontos)
+input int      InpDistanceStepPoints   = 1;      // Passo dos campos SL e TP (pontos)
+input int      InpSlSnapPoints         = 15;     // Snap automático do SL (0 = desativado)
 
 input group "=== Risco ==="
 input RiskMode InpRiskMode             = RISK_MODE_LOTS;
-input double   InpRiskPercent          = 1.0;
-input double   InpRiskMoney            = 1.0;   // risco fixo na moeda da conta
+input double   InpDefaultLots          = 0.1;    // Lote fixo (modo Lots)
+input double   InpRiskPercent          = 0.1;    // Risco em % do saldo (modo %)
+input double   InpRiskMoney            = 10.0;   // Risco em valor fixo (modo $)
+input double   InpCommissionPerLot     = 0.0;    // Comissão por lado, por 1.00 lote ($)
 
-input group "=== Custos ==="
-input double   InpCommissionPerLot     = 0.0;   // comissão por lado, por 1.00 lote, na moeda da conta
+input group "=== Saída em TP Duplo ==="
+input double   InpDefaultTp1Pct        = 50.0;   // Volume de saída no TP1 (% do lote original)
+input double   InpTpSplitOffsetPoints  = 600.0;  // Gap padrão TP1→TP2 ao iniciar (pontos)
 
-input group "=== Painel ==="
-input int      InpPanelX               = 30;
-input int      InpPanelY               = 40;
-input bool     InpShowPreview          = true;
-input bool     InpShowRRZone           = true;
-
-input group "=== Gestão de Posição ==="
-input int      InpBEProtectOffsetPts   = 1;      // BE protect offset em pontos (evitar BE seco)
+input group "=== Break Even ==="
+input int      InpBEProtectOffsetPts   = 1;      // Offset acima da entrada ao aplicar BE (pontos)
 input double   InpBETriggerTargetPct   = 50.0;   // Auto BE: gatilho em % do caminho até o TP (1..100)
-input double   InpAlgoPartialTrigger   = 60.0;   // Gatilho parcial: % do caminho até o TP
-input double   InpAlgoPartialClosePct  = 50.0;   // Fechamento parcial: % da posição a fechar
-input double   InpTP1ClosePct          = 50.0;   // TP Exit: % do volume original a fechar em TP1
-input double   InpTP2ClosePct          = 100.0;  // TP Exit: % do volume restante a fechar em TP2
-input int      InpTrailingDistPts      = 0;      // Distância trailing em pontos (0 = usa risco inicial)
-input bool     InpTrailingRequiresBE   = true;   // Trailing só atua após BE ativo na posição
 
-input group "=== Markers de Posição Aberta ==="
-input bool     InpShowMidTargetBlock   = true;   // Mostrar bloco de alvo médio (parcial) no gráfico
+input group "=== Trailing Stop ==="
+input int      InpTrailingDistPts      = 0;      // Distância do trailing (0 = usa risco inicial)
+input bool     InpTrailingRequiresBE   = true;   // Exige BE ativo para trailing atuar
 
 //+------------------------------------------------------------------+
 //|  ██  CONSTANTES DE LAYOUT                                        |
@@ -140,7 +128,7 @@ const string GV_PFX               = "LFG_";  // terminal GV prefix for chart-cha
 
 // ── Phase 6.1: CAppDialog compact layout ──────────────────────────
 const int    PANEL_W               = 350;
-const int    PANEL_H               = 365;   // keeps a small bottom blue margin under Cancel/Send
+const int    PANEL_H               = 318;   // keeps a small bottom blue margin under Cancel/Send
 
 const int    ROW_H                 = 45;   // v2.0: bigger touch-friendly rows
 const int    ROW_GAP               = 2;
@@ -208,9 +196,6 @@ const color  CLR_PREV_EN_BORDER    = C'100,130,180';
 const color  CLR_PREV_EN_TEXT      = C'20,30,80';      // azul-escuro
 // ── Overlay handle bar color — ice white (#f0f8ff) ─────────────────
 const color  CLR_OVL_HANDLE_BG     = C'240,248,255';  // #f0f8ff — ice white
-// ── Algo Trading button colors ──────────────────────────────────────
-const color  CLR_ALGO_BG           = C'55,130,195';   // mid steel-blue — utility row
-const color  CLR_ALGO_BORDER       = C'30,90,150';
 
 // ── 6.2: Screen-space overlay label geometry (Position-Sizer style) ──────────
 const int    OVL_PAD_X             = 4;    // left inset — tight like reference
@@ -286,13 +271,11 @@ struct PanelState
    bool              entry_line_visible;
    bool              sl_line_visible;
    bool              tp_line_visible;
-   bool              rr_zone_visible;
 
    bool              break_even_enabled;
    int               break_even_points;
    bool              trailing_stop_enabled;
    int               trailing_stop_points;
-   bool              algo_trading_ui_enabled;  // toggle-row UI state
 
    bool              preview_busy;
    bool              syncing;
@@ -326,9 +309,7 @@ struct ManagedTradeState
    bool     tp1_done;              // fechamento em TP1 já executado
    bool     tp2_done;              // fechamento em TP2 já executado
    bool     be_applied;            // BE já foi aplicado nesta posição
-   bool     partial_done;          // fechamento parcial já executado
    bool     trailing_armed;        // trailing armado manualmente
-   bool     algo_managed;          // posição entrou no pipeline Algo Trading
   };
 
 struct UiDispatchState
@@ -551,7 +532,6 @@ void    ProcessUiManualBreakEven();
 void    ProcessUiManualTrailing();
 void    ProcessUiToggleAutoBE();
 void    ProcessUiToggleAutoTrailing();
-void    ProcessUiToggleAlgoTrading();
 void    DeletePreviewObjects();
 void    DeleteByPrefix();
 void    UpdatePreview(const bool do_redraw = true);
@@ -574,6 +554,8 @@ void    HandleMouseMoveDrag(const long mouse_x, const double mouse_y_d, const bo
 bool    HandlePanelEdgeGrabDrag(const int mx, const int my, const bool btn_down);
 void    SaveStateForChartChange();
 bool    RestoreStateFromChartChange();
+void    SaveSessionState();
+void    RestoreSessionState();
 double  CalcSmartInitDistance();
 void    EraseOverlayLabel(const string kind);
 void    UpdateOverlayPreviewLabel(const string kind, const string text,
@@ -635,8 +617,6 @@ private:
    // ── Auto BE / Auto Trailing checkboxes ─────────────────────────
    CButton        m_ChkAutoBE;
    CButton        m_ChkAutoTrailing;
-   // ── Algo Trading row ───────────────────────────────────────────
-   CButton        m_BtnAlgoTrading;
    // ── Bottom row ─────────────────────────────────────────────────
    CButton        m_BtnCancel;
    CButton        m_BtnSend;
@@ -705,7 +685,6 @@ public:
    void           OnClickTrailing(void);
    void           OnClickAutoBE(void);
    void           OnClickAutoTrailing(void);
-   void           OnClickAlgoTrading(void);
    void           OnEndEditPrimary(void);
    void           OnEndEditEntry(void);
    void           OnEndEditTP(void);
@@ -770,7 +749,6 @@ bool             g_ui_interaction_active = false;
 
 // ── Gestão de posição por ticket ──────────────────────────────────
 ManagedTradeState  g_managed_trades[];
-bool               g_algo_trading_enabled = false;   // estado lógico do Algo Trading
 bool               g_managed_marker_cleanup_pending = true;
 double             g_combined_sl_handled[];           // SL prices já combinados neste ciclo de refresh
 bool               g_tp_exits_active = false;         // true quando algum trade tem tp_exits_enabled
@@ -841,11 +819,11 @@ int OnInit()
    g_state.Init();
    // Fresh session: use input defaults + smart initial distances
    g_state.lots    = NormalizeVolumeValue(InpDefaultLots);
-   g_state.panel_x = InpPanelX;
-   g_state.panel_y = InpPanelY;
    double init_dist    = CalcSmartInitDistance();
    g_state.sl_points   = init_dist;
    g_state.tp_points   = MathRound(init_dist * 1.5);   // 1:1.5 RR default
+   // Restore last session values if available (panel state survives MT5 restart)
+   RestoreSessionState();
 
    // Purge any orphaned CAppDialog objects left by a crash or incomplete teardown.
    // DeleteByPrefix() only covers "LFP_*"; CAppDialog creates "LotForgeMgr*" names
@@ -855,8 +833,6 @@ int OnInit()
    g_trade_plan.Clear();
 
    // Use restored coordinates when available (REASON_CHARTCHANGE path).
-   // g_state.panel_x/y already hold either the restored position or the
-   // InpPanelX/Y defaults — the conditional above took care of that.
    if(!g_panel.CreatePanel(0, PANEL_NAME, 0, g_state.panel_x, g_state.panel_y))
      {
       Print("ERRO: falha ao criar painel CAppDialog");
@@ -906,6 +882,9 @@ void OnDeinit(const int reason)
      }
 
    // ── Teardown completo para todos os outros motivos de deinit ─────────
+   g_state.panel_x = (int)g_panel.Left();
+   g_state.panel_y = (int)g_panel.Top();
+   SaveSessionState();
    DeletePreviewObjects();
    EraseAllManagedTradeMarkers();
    g_panel.Destroy(reason);
@@ -933,7 +912,6 @@ void OnTick()
    //       Executa se: Auto BE / Auto Trailing / Algo Trading ativos
    if(g_state.break_even_enabled  ||
       g_state.trailing_stop_enabled ||
-      g_algo_trading_enabled        ||
       g_tp_exits_active)
      {
       RunAutomatedTradeManagement();

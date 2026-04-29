@@ -57,7 +57,7 @@ bool PreviewLinePriceMoved(const string kind, const double expected_price)
 
 void RefreshNativePreviewLineDragState(const bool btn_down)
   {
-   if(!btn_down || g_state.action == ACTION_NONE || !InpShowPreview ||
+   if(!btn_down || g_state.action == ACTION_NONE ||
       g_panel_dragging || g_panel_manual_dragging)
      {
       g_native_preview_line_dragging = false;
@@ -804,7 +804,7 @@ bool BuildPreviewGeometrySnapshot(PreviewSnapshot &snapshot)
   {
    snapshot.Clear();
 
-   if(g_state.action == ACTION_NONE || !InpShowPreview)
+   if(g_state.action == ACTION_NONE)
       return false;
 
    snapshot.action      = g_state.action;
@@ -926,14 +926,14 @@ void ApplyPreviewFinancialStateToSnapshot(PreviewSnapshot &snapshot)
      }
 
    // ── Dual TP labels (managed exit system) ────────────────────────
-   // Uses InpTP1ClosePct / InpTP2ClosePct — same as execution logic.
+   // Uses InpDefaultTp1Pct / 100.0 — same as execution logic.
    if(IsDualTPMode() && g_preview_financial_state.ready && g_preview_financial_state.plan_valid)
      {
       TradeParams plan  = g_preview_financial_state.plan;
       bool        is_buy = IsBuyAction(snapshot.action);
 
-      double close_pct1 = MathMax(1.0, MathMin(100.0, InpTP1ClosePct));
-      double close_pct2 = MathMax(1.0, MathMin(100.0, InpTP2ClosePct));
+      double close_pct1 = MathMax(1.0, MathMin(100.0, InpDefaultTp1Pct));
+      double close_pct2 = MathMax(1.0, MathMin(100.0, 100.0));
       // Use MathFloor/vol_step — matches UpdateManagedTradeMarkers projection logic.
       // NormalizeVolumeValue clamps to vol_min (e.g. 0.1 for US30) which doubles the result.
       double vol_step_p  = EffectiveVolumeStep();
@@ -1209,7 +1209,7 @@ void UpdatePreviewGeometryOnly(const bool do_redraw)
    // Invalidate px1/px2 cache so UpdateOverlayPreviewLabel recomputes from scratch.
    InvalidateOverlayBarXCache();
 
-   if(g_state.action == ACTION_NONE || !InpShowPreview)
+   if(g_state.action == ACTION_NONE)
      {
       DeletePreviewObjects();
       return;
@@ -1997,7 +1997,7 @@ void HandleMouseMoveDrag(const long   mouse_x_l,
    if(g_drag_phase == DRAG_IDLE)
      {
       // Only detect overlay bar hits (not thin lines — those use native drag)
-      string hit = (g_state.action != ACTION_NONE && InpShowPreview)
+      string hit = (g_state.action != ACTION_NONE)
                    ? DetectOverlayBarHit(mx, my) : "";
       if(hit != "")
         {
